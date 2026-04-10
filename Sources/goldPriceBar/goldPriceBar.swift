@@ -81,8 +81,53 @@ struct PriceInfo {
     static let empty = PriceInfo(price: 0, changeAmount: "0.00", changePercent: "0.00%", isNegative: nil)
 }
 
+// MARK: - Market Quote API Response
+
+struct MarketQuoteResponse: Decodable {
+    let resultData: ResultData?
+
+    struct ResultData: Decodable {
+        let data: [QuoteItem]?
+    }
+
+    struct QuoteItem: Decodable {
+        let uniqueCode: String?
+        let name: String?
+        let lastPrice: Double?
+        let raise: Double?
+        let raisePercent: Double?
+    }
+}
+
+struct MarketData {
+    let londonGold: QuoteRow       // XAUUSD
+    let goldTD: QuoteRow           // Au(T+D)
+    let usdCnh: QuoteRow           // USDCNH
+    let dollarIndex: QuoteRow      // DXY
+    let convertedPrice: Double     // 伦敦金换算价 (¥/g)
+    let premium: Double            // 溢价金额 (¥/g)
+
+    struct QuoteRow {
+        let name: String
+        let price: String
+        let raise: Double
+        let raisePercent: Double
+    }
+
+    static let empty = MarketData(
+        londonGold: QuoteRow(name: "伦敦金", price: "--", raise: 0, raisePercent: 0),
+        goldTD: QuoteRow(name: "黄金T+D", price: "--", raise: 0, raisePercent: 0),
+        usdCnh: QuoteRow(name: "离岸人民币", price: "--", raise: 0, raisePercent: 0),
+        dollarIndex: QuoteRow(name: "美元指数", price: "--", raise: 0, raisePercent: 0),
+        convertedPrice: 0,
+        premium: 0
+    )
+}
+
 final class GoldPriceService: Sendable {
     private let session: URLSession
+
+    private let marketQuoteURL = URL(string: "https://ms.jr.jd.com/gw2/generic/jdtwt/h5/m/getSimpleQuoteUseUniqueCodes?reqData=%7B%22ticket%22%3A%22gold-price-h5%22%2C%22uniqueCodes%22%3A%5B%22WG-XAUUSD%22%2C%22SGE-Au(T%2BD)%22%2C%22FX-USDCNH%22%2C%22FX-DXY%22%5D%7D")!
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -100,6 +145,68 @@ final class GoldPriceService: Sendable {
             case .minSheng:
                 return try decodeMinSheng(from: data)
             }
+        } catch {
+            return .empty
+        }
+    }
+
+    func fetchMarketData(currentGoldPrice: Double) async -> MarketData {
+        var request = URLRequest(url: marketQuoteURL)
+        request.timeoutInterval = 5
+
+        do {
+            let (data, _) = try await session.data(for: request)
+            let response = try JSONDecoder().decode(MarketQuoteResponse.self, from: data)
+            guard let items = response.resultData?.data else { return .empty }
+
+            var xauusd: MarketQuoteResponse.QuoteItem?
+            var auTD: MarketQuoteResponse.QuoteItem?
+            var usdcnh: MarketQuoteResponse.QuoteItem?
+            var dxy: MarketQuoteResponse.QuoteItem?
+
+            for item in items {
+                switch item.uniqueCode {
+                case "WG-XAUUSD": xauusd = item
+                case "SGE-Au(T+D)": auTD = item
+                case "FX-USDCNH": usdcnh = item
+                case "FX-DXY": dxy = item
+                default: break
+                }
+            }
+
+            func makeRow(_ item: MarketQuoteResponse.QuoteItem?, decimals: Int = 2) -> MarketData.QuoteRow {
+                guard let item else { return MarketData.QuoteRow(name: "--", price: "--", raise: 0, raisePercent: 0) }
+                let priceStr = String(format: "%.\(decimals)f", item.lastPrice ?? 0)
+                return MarketData.QuoteRow(
+                    name: item.name ?? "--",
+                    price: priceStr,
+                    raise: item.raise ?? 0,
+                    raisePercent: item.raisePercent ?? 0
+                )
+            }
+
+            let londonGoldPrice = xauusd?.lastPrice ?? 0
+            let exchangeRate = usdcnh?.lastPrice ?? 0
+
+            // 伦敦金换算价 = XAUUSD / 31.1035 * USDCNH
+            let converted = londonGoldPrice > 0 && exchangeRate > 0
+                ? londonGoldPrice / 31.1035 * exchangeRate
+                : 0
+
+            // 溢价 = 黄金T+D - 换算价
+            let auTDPrice = auTD?.lastPrice ?? 0
+            let premium = converted > 0 && auTDPrice > 0
+                ? auTDPrice - converted
+                : 0
+
+            return MarketData(
+                londonGold: makeRow(xauusd, decimals: 2),
+                goldTD: makeRow(auTD, decimals: 2),
+                usdCnh: makeRow(usdcnh, decimals: 4),
+                dollarIndex: makeRow(dxy, decimals: 3),
+                convertedPrice: converted,
+                premium: premium
+            )
         } catch {
             return .empty
         }
@@ -159,13 +266,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var currentPrice: Double = 0
     private var currentPriceInfo: PriceInfo = .empty
+    private var currentMarketData: MarketData = .empty
     private var isFetching = false
+    private var lastUpdateTime: Date?
+
+    // Hover panel
+    private var hoverPanel: HoverPanel?
 
     // Price alert state
     private var highPriceThreshold: Double?  // alert when price >= this
     private var lowPriceThreshold: Double?   // alert when price <= this
     private var highAlertTriggered = false
     private var lowAlertTriggered = false
+    private var isMenuOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -175,9 +288,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusTitle()
         rebuildMenu()
         restartTimer()
+        setupHoverTracking()
         Task {
             await self.refreshPrice()
         }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
+        hoverPanel?.dismiss()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -202,11 +325,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isFetching = true
         defer { isFetching = false }
 
-        let info = await service.fetchPriceInfo(for: selectedProvider)
+        async let priceTask = service.fetchPriceInfo(for: selectedProvider)
+        let info = await priceTask
         currentPriceInfo = info
         currentPrice = info.price
+        lastUpdateTime = Date()
         updateStatusTitle()
         checkPriceAlerts()
+
+        // Fetch market data in background and update hover panel if visible
+        let marketData = await service.fetchMarketData(currentGoldPrice: currentPrice)
+        currentMarketData = marketData
+        if hoverPanel?.isVisible == true {
+            updateHoverPanelContent()
+        }
     }
 
     private func updateStatusTitle() {
@@ -570,6 +702,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lowPriceThreshold = defaults.double(forKey: SettingsKey.lowThreshold)
         }
     }
+
+    // MARK: - Hover Panel
+
+    private func setupHoverTracking() {
+        NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            Task { @MainActor in
+                self?.handleMouseMove()
+            }
+        }
+        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            Task { @MainActor in
+                self?.handleMouseMove()
+            }
+            return event
+        }
+    }
+
+    private func handleMouseMove() {
+        guard !isMenuOpen,
+              let button = statusItem.button,
+              let buttonWindow = button.window else { return }
+
+        let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let mouseLocation = NSEvent.mouseLocation
+
+        let isOverButton = buttonRect.contains(mouseLocation)
+
+        let isOverPanel: Bool
+        if let panel = hoverPanel, panel.isVisible {
+            isOverPanel = panel.frame.contains(mouseLocation)
+        } else {
+            isOverPanel = false
+        }
+
+        if isOverButton && (hoverPanel == nil || !hoverPanel!.isVisible) {
+            showHoverPanel(below: buttonRect)
+        } else if !isOverButton && !isOverPanel {
+            hoverPanel?.dismiss()
+        }
+    }
+
+    private func buildHoverPanelData() -> HoverPanelData {
+        let info = currentPriceInfo
+        let timeStr: String
+        if let time = lastUpdateTime {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "HH:mm:ss"
+            timeStr = fmt.string(from: time)
+        } else {
+            timeStr = "--:--:--"
+        }
+
+        var alertParts: [String] = []
+        if let high = highPriceThreshold {
+            alertParts.append("≥ \(format(price: high))")
+        }
+        if let low = lowPriceThreshold {
+            alertParts.append("≤ \(format(price: low))")
+        }
+        let alertInfo = alertParts.isEmpty ? "未设置" : alertParts.joined(separator: " | ")
+
+        return HoverPanelData(
+            provider: selectedProvider.displayName,
+            price: format(price: currentPrice),
+            changeAmount: info.changeAmount,
+            changePercent: info.changePercent,
+            isNegative: info.isNegative,
+            updateTime: timeStr,
+            refreshInterval: refreshInterval.title,
+            alertInfo: alertInfo,
+            market: currentMarketData
+        )
+    }
+
+    private func showHoverPanel(below buttonRect: NSRect) {
+        hoverPanel?.dismiss()
+
+        let panel = HoverPanel()
+        panel.show(below: buttonRect, data: buildHoverPanelData())
+        hoverPanel = panel
+    }
+
+    private func updateHoverPanelContent() {
+        hoverPanel?.updateContent(data: buildHoverPanelData())
+    }
+}
+
+struct HoverPanelData {
+    let provider: String
+    let price: String
+    let changeAmount: String
+    let changePercent: String
+    let isNegative: Bool?
+    let updateTime: String
+    let refreshInterval: String
+    let alertInfo: String
+    let market: MarketData
 }
 
 // MARK: - Toast Notification Window
@@ -727,6 +956,304 @@ final class ToastWindow {
     }
 }
 
+// MARK: - Hover Detail Panel
+
+@MainActor
+final class HoverPanel {
+    private var window: NSPanel?
+    private var buttonRect: NSRect = .zero
+
+    // Mutable labels for live updates
+    private var priceLabel: NSTextField?
+    private var changeLabel: NSTextField?
+    private var infoValueLabels: [String: NSTextField] = [:]
+    private var marketValueLabels: [String: NSTextField] = [:]
+
+    var isVisible: Bool {
+        window?.isVisible ?? false
+    }
+
+    var frame: NSRect {
+        window?.frame ?? .zero
+    }
+
+    func show(below buttonRect: NSRect, data: HoverPanelData) {
+        self.buttonRect = buttonRect
+
+        let panelWidth: CGFloat = 300
+        let padding: CGFloat = 16
+        let labelColor = NSColor(white: 0.5, alpha: 1)
+        let valueColor = NSColor(white: 0.85, alpha: 1)
+        let sectionTitleColor = NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.0, alpha: 1)
+
+        // Container
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor(white: 0.14, alpha: 0.96).cgColor
+        container.layer?.cornerRadius = 12
+        container.layer?.borderColor = NSColor(white: 0.3, alpha: 0.5).cgColor
+        container.layer?.borderWidth = 0.5
+
+        // --- Top section: Provider + Price + Change ---
+        let providerLabel = NSTextField(labelWithString: data.provider)
+        providerLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        providerLabel.textColor = labelColor
+        providerLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(providerLabel)
+
+        let pLabel = NSTextField(labelWithString: "\u{00A5} " + data.price)
+        pLabel.font = .monospacedDigitSystemFont(ofSize: 26, weight: .bold)
+        pLabel.textColor = .white
+        pLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(pLabel)
+        self.priceLabel = pLabel
+
+        let cLabel = NSTextField(labelWithString: "\(data.changeAmount)  \(data.changePercent)")
+        cLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        cLabel.textColor = changeColor(for: data.isNegative)
+        cLabel.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(cLabel)
+        self.changeLabel = cLabel
+
+        // --- Divider 1 ---
+        let divider1 = makeDivider()
+        container.addSubview(divider1)
+
+        // --- Market data section ---
+        let marketTitle = NSTextField(labelWithString: "行情数据")
+        marketTitle.font = .systemFont(ofSize: 11, weight: .semibold)
+        marketTitle.textColor = sectionTitleColor
+        marketTitle.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(marketTitle)
+
+        let m = data.market
+        let marketRows: [(key: String, title: String, value: String, raise: Double)] = [
+            ("londonGold", "伦敦金", formatValueWithPercent(price: m.londonGold.price, raisePercent: m.londonGold.raisePercent), m.londonGold.raise),
+            ("goldTD", "黄金T+D", formatValueWithPercent(price: m.goldTD.price, raisePercent: m.goldTD.raisePercent), m.goldTD.raise),
+            ("converted", "伦敦金换算 (¥/g)", m.convertedPrice > 0 ? String(format: "%.2f", m.convertedPrice) : "--", 0),
+            ("premium", "溢价 (¥/g)", m.convertedPrice > 0 ? String(format: "%+.2f", m.premium) : "--", m.premium),
+            ("usdcnh", "离岸人民币", formatValueWithPercent(price: m.usdCnh.price, raisePercent: m.usdCnh.raisePercent), m.usdCnh.raise),
+            ("dxy", "美元指数", formatValueWithPercent(price: m.dollarIndex.price, raisePercent: m.dollarIndex.raisePercent), m.dollarIndex.raise),
+        ]
+
+        var marketLabelPairs: [(NSTextField, NSTextField)] = []
+        for row in marketRows {
+            let tl = NSTextField(labelWithString: row.title)
+            tl.font = .systemFont(ofSize: 11, weight: .regular)
+            tl.textColor = labelColor
+            tl.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(tl)
+
+            let vl = NSTextField(labelWithString: row.value)
+            vl.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            vl.alignment = .right
+            vl.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(vl)
+
+            if row.key == "converted" {
+                vl.textColor = valueColor
+            } else {
+                vl.textColor = raisedColor(row.raise, fallback: valueColor)
+            }
+
+            marketLabelPairs.append((tl, vl))
+            marketValueLabels[row.key] = vl
+        }
+
+        // --- Divider 2 ---
+        let divider2 = makeDivider()
+        container.addSubview(divider2)
+
+        // --- Info section ---
+        let infoRows: [(key: String, title: String, value: String)] = [
+            ("updateTime", "更新时间", data.updateTime),
+            ("refreshInterval", "刷新频率", data.refreshInterval),
+            ("alert", "价格提醒", data.alertInfo),
+        ]
+
+        var infoLabelPairs: [(NSTextField, NSTextField)] = []
+        for row in infoRows {
+            let tl = NSTextField(labelWithString: row.title)
+            tl.font = .systemFont(ofSize: 11, weight: .regular)
+            tl.textColor = labelColor
+            tl.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(tl)
+
+            let vl = NSTextField(labelWithString: row.value)
+            vl.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            vl.textColor = valueColor
+            vl.alignment = .right
+            vl.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(vl)
+
+            infoLabelPairs.append((tl, vl))
+            infoValueLabels[row.key] = vl
+        }
+
+        // --- Layout ---
+        var constraints: [NSLayoutConstraint] = [
+            providerLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: padding),
+            providerLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+
+            pLabel.topAnchor.constraint(equalTo: providerLabel.bottomAnchor, constant: 4),
+            pLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+
+            cLabel.topAnchor.constraint(equalTo: pLabel.bottomAnchor, constant: 2),
+            cLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+
+            divider1.topAnchor.constraint(equalTo: cLabel.bottomAnchor, constant: 12),
+            divider1.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            divider1.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            divider1.heightAnchor.constraint(equalToConstant: 0.5),
+
+            marketTitle.topAnchor.constraint(equalTo: divider1.bottomAnchor, constant: 10),
+            marketTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+        ]
+
+        var prev = marketTitle.bottomAnchor
+        for (i, (tl, vl)) in marketLabelPairs.enumerated() {
+            let top: CGFloat = i == 0 ? 8 : 5
+            constraints.append(contentsOf: [
+                tl.topAnchor.constraint(equalTo: prev, constant: top),
+                tl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+                vl.centerYAnchor.constraint(equalTo: tl.centerYAnchor),
+                vl.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+                vl.leadingAnchor.constraint(greaterThanOrEqualTo: tl.trailingAnchor, constant: 8),
+            ])
+            prev = tl.bottomAnchor
+        }
+
+        constraints.append(contentsOf: [
+            divider2.topAnchor.constraint(equalTo: prev, constant: 10),
+            divider2.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            divider2.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            divider2.heightAnchor.constraint(equalToConstant: 0.5),
+        ])
+
+        prev = divider2.bottomAnchor
+        for (i, (tl, vl)) in infoLabelPairs.enumerated() {
+            let top: CGFloat = i == 0 ? 8 : 5
+            constraints.append(contentsOf: [
+                tl.topAnchor.constraint(equalTo: prev, constant: top),
+                tl.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+                vl.centerYAnchor.constraint(equalTo: tl.centerYAnchor),
+                vl.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+                vl.leadingAnchor.constraint(greaterThanOrEqualTo: tl.trailingAnchor, constant: 8),
+            ])
+            prev = tl.bottomAnchor
+        }
+
+        constraints.append(prev.constraint(equalTo: container.bottomAnchor, constant: -padding))
+        NSLayoutConstraint.activate(constraints)
+
+        // Size and position
+        let fittingSize = container.fittingSize
+        let panelHeight = fittingSize.height
+        let panelX = buttonRect.midX - panelWidth / 2
+        let panelY = buttonRect.minY - panelHeight - 4
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: panelX, y: panelY, width: panelWidth, height: panelHeight),
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .popUpMenu
+        panel.hasShadow = true
+        panel.contentView = container
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            panel.animator().alphaValue = 1
+        }
+
+        self.window = panel
+    }
+
+    func updateContent(data: HoverPanelData) {
+        priceLabel?.stringValue = "\u{00A5} " + data.price
+        changeLabel?.stringValue = "\(data.changeAmount)  \(data.changePercent)"
+        changeLabel?.textColor = changeColor(for: data.isNegative)
+
+        infoValueLabels["updateTime"]?.stringValue = data.updateTime
+        infoValueLabels["refreshInterval"]?.stringValue = data.refreshInterval
+        infoValueLabels["alert"]?.stringValue = data.alertInfo
+
+        let m = data.market
+        let fallback = NSColor(white: 0.85, alpha: 1)
+
+        marketValueLabels["londonGold"]?.stringValue = formatValueWithPercent(price: m.londonGold.price, raisePercent: m.londonGold.raisePercent)
+        marketValueLabels["londonGold"]?.textColor = raisedColor(m.londonGold.raise, fallback: fallback)
+
+        marketValueLabels["goldTD"]?.stringValue = formatValueWithPercent(price: m.goldTD.price, raisePercent: m.goldTD.raisePercent)
+        marketValueLabels["goldTD"]?.textColor = raisedColor(m.goldTD.raise, fallback: fallback)
+
+        marketValueLabels["converted"]?.stringValue = m.convertedPrice > 0 ? String(format: "%.2f", m.convertedPrice) : "--"
+
+        marketValueLabels["premium"]?.stringValue = m.convertedPrice > 0 ? String(format: "%+.2f", m.premium) : "--"
+        marketValueLabels["premium"]?.textColor = raisedColor(m.premium, fallback: fallback)
+
+        marketValueLabels["usdcnh"]?.stringValue = formatValueWithPercent(price: m.usdCnh.price, raisePercent: m.usdCnh.raisePercent)
+        marketValueLabels["usdcnh"]?.textColor = raisedColor(m.usdCnh.raise, fallback: fallback)
+
+        marketValueLabels["dxy"]?.stringValue = formatValueWithPercent(price: m.dollarIndex.price, raisePercent: m.dollarIndex.raisePercent)
+        marketValueLabels["dxy"]?.textColor = raisedColor(m.dollarIndex.raise, fallback: fallback)
+    }
+
+    func dismiss() {
+        guard let window = self.window else { return }
+        self.window = nil
+        priceLabel = nil
+        changeLabel = nil
+        infoValueLabels.removeAll()
+        marketValueLabels.removeAll()
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            window.animator().alphaValue = 0
+        }, completionHandler: {
+            DispatchQueue.main.async {
+                window.orderOut(nil)
+            }
+        })
+    }
+
+    // MARK: - Helpers
+
+    private func changeColor(for isNegative: Bool?) -> NSColor {
+        guard let isNeg = isNegative else { return .secondaryLabelColor }
+        return isNeg
+            ? NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1)
+            : NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1)
+    }
+
+    private func raisedColor(_ raise: Double, fallback: NSColor) -> NSColor {
+        if raise < 0 { return NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1) }
+        if raise > 0 { return NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1) }
+        return fallback
+    }
+
+    private func formatValueWithPercent(price: String, raisePercent: Double) -> String {
+        guard price != "--" else { return price }
+        let pctValue = raisePercent * 100
+        let truncated = (pctValue * 100).rounded(.towardZero) / 100
+        let sign = truncated > 0 ? "+" : ""
+        return String(format: "%@  %@%.2f%%", price, sign, truncated)
+    }
+
+    private func makeDivider() -> NSView {
+        let v = NSView()
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor(white: 0.3, alpha: 0.5).cgColor
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }
+}
+
 @main
 struct GoldPriceBarApp {
     static func main() {
@@ -736,3 +1263,4 @@ struct GoldPriceBarApp {
         app.run()
     }
 }
+
