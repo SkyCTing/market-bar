@@ -14,6 +14,15 @@ enum GoldProvider: CaseIterable {
         }
     }
 
+    var shortName: String {
+        switch self {
+        case .zheShang:
+            return "浙商"
+        case .minSheng:
+            return "民生"
+        }
+    }
+
     var url: URL {
         switch self {
         case .zheShang:
@@ -44,6 +53,8 @@ struct ZheShangResponse: Decodable {
 
     struct DataNode: Decodable {
         let lastPrice: Double?
+        let raise: Double?
+        let raisePercent: Double?
     }
 }
 
@@ -56,7 +67,18 @@ struct MinShengResponse: Decodable {
 
     struct DataNode: Decodable {
         let minimumPriceValue: String?
+        let rateValue: String?
+        let dayFluctuateNum: String?
     }
+}
+
+struct PriceInfo {
+    let price: Double
+    let changeAmount: String   // e.g. "-4.22" or "+4.22"
+    let changePercent: String  // e.g. "-0.44%" or "+0.44%"
+    let isNegative: Bool?
+
+    static let empty = PriceInfo(price: 0, changeAmount: "0.00", changePercent: "0.00%", isNegative: nil)
 }
 
 final class GoldPriceService: Sendable {
@@ -66,7 +88,7 @@ final class GoldPriceService: Sendable {
         self.session = session
     }
 
-    func fetchPrice(for provider: GoldProvider) async -> Double {
+    func fetchPriceInfo(for provider: GoldProvider) async -> PriceInfo {
         var request = URLRequest(url: provider.url)
         request.timeoutInterval = 5
 
@@ -74,26 +96,55 @@ final class GoldPriceService: Sendable {
             let (data, _) = try await session.data(for: request)
             switch provider {
             case .zheShang:
-                return try decodeZheShangPrice(from: data)
+                return try decodeZheShang(from: data)
             case .minSheng:
-                return try decodeMinShengPrice(from: data)
+                return try decodeMinSheng(from: data)
             }
         } catch {
-            return 0
+            return .empty
         }
     }
 
-    private func decodeZheShangPrice(from data: Data) throws -> Double {
+    private func decodeZheShang(from data: Data) throws -> PriceInfo {
         let response = try JSONDecoder().decode(ZheShangResponse.self, from: data)
-        return response.resultData?.data?.lastPrice ?? 0
+        let node = response.resultData?.data
+        let price = node?.lastPrice ?? 0
+        let raise = node?.raise ?? 0
+        let raisePercent = node?.raisePercent ?? 0
+
+        // Truncate raisePercent * 100 to 2 decimal places (not round)
+        let pctValue = raisePercent * 100
+        let truncated = (pctValue * 100).rounded(.towardZero) / 100
+        let percentStr = String(format: "%.2f%%", truncated)
+        let amountStr = String(format: "%.2f", raise)
+        let isNeg = raise < 0 ? true : (raise > 0 ? false : nil)
+
+        return PriceInfo(price: price, changeAmount: amountStr, changePercent: percentStr, isNegative: isNeg)
     }
 
-    private func decodeMinShengPrice(from data: Data) throws -> Double {
+    private func decodeMinSheng(from data: Data) throws -> PriceInfo {
         let response = try JSONDecoder().decode(MinShengResponse.self, from: data)
-        guard let value = response.resultData?.data?.minimumPriceValue else {
-            return 0
+        let node = response.resultData?.data
+        let price: Double
+        if let value = node?.minimumPriceValue {
+            price = Double(value) ?? 0
+        } else {
+            price = 0
         }
-        return Double(value) ?? 0
+        let percentStr = node?.rateValue ?? "0.00%"
+        let amountStr = node?.dayFluctuateNum ?? "0.00"
+
+        // Determine direction from the amount string
+        let isNeg: Bool?
+        if amountStr.hasPrefix("-") {
+            isNeg = true
+        } else if let val = Double(amountStr), val > 0 {
+            isNeg = false
+        } else {
+            isNeg = nil
+        }
+
+        return PriceInfo(price: price, changeAmount: amountStr, changePercent: percentStr, isNegative: isNeg)
     }
 }
 
@@ -107,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var refreshInterval: RefreshIntervalOption = .one
     private var timer: Timer?
     private var currentPrice: Double = 0
+    private var currentPriceInfo: PriceInfo = .empty
     private var isFetching = false
 
     // Price alert state
@@ -150,14 +202,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isFetching = true
         defer { isFetching = false }
 
-        let price = await service.fetchPrice(for: selectedProvider)
-        currentPrice = price
+        let info = await service.fetchPriceInfo(for: selectedProvider)
+        currentPriceInfo = info
+        currentPrice = info.price
         updateStatusTitle()
         checkPriceAlerts()
     }
 
     private func updateStatusTitle() {
-        statusItem.button?.title = "\(selectedProvider.displayName) \(format(price: currentPrice))"
+        guard let button = statusItem.button else { return }
+
+        let info = currentPriceInfo
+        let priceStr = format(price: currentPrice)
+
+        // e.g. "浙商 1049.59"
+        let prefix = "\(selectedProvider.shortName) \(priceStr) "
+        // e.g. "(-4.08 -0.38%)"
+        let changePart = "(\(info.changeAmount) \(info.changePercent))"
+
+        let fullStr = prefix + changePart
+        let attributed = NSMutableAttributedString(string: fullStr)
+
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+
+        // Style entire string with default color
+        attributed.addAttributes([
+            .font: font,
+            .foregroundColor: NSColor.labelColor,
+        ], range: NSRange(location: 0, length: fullStr.count))
+
+        // Color the change part
+        let changeColor: NSColor
+        if let isNeg = info.isNegative {
+            changeColor = isNeg
+                ? NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1)  // green
+                : NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1) // red
+        } else {
+            changeColor = .secondaryLabelColor
+        }
+
+        let changeRange = (fullStr as NSString).range(of: changePart)
+        attributed.addAttribute(.foregroundColor, value: changeColor, range: changeRange)
+
+        button.image = nil
+        button.imagePosition = .noImage
+        button.attributedTitle = attributed
     }
 
     private func format(price: Double) -> String {
