@@ -1146,14 +1146,27 @@ final class HoverPanel {
         constraints.append(prev.constraint(equalTo: container.bottomAnchor, constant: -padding))
         NSLayoutConstraint.activate(constraints)
 
-        // Size and position
+        // Size and position — force a layout pass first so fittingSize is accurate
+        container.translatesAutoresizingMaskIntoConstraints = false
+        // Give container a temporary width constraint so it can resolve height
+        let tempWidthConstraint = container.widthAnchor.constraint(equalToConstant: panelWidth)
+        tempWidthConstraint.isActive = true
+        container.layoutSubtreeIfNeeded()
+        tempWidthConstraint.isActive = false
+
         let fittingSize = container.fittingSize
-        let panelHeight = fittingSize.height
+        // Guard against zero/negative dimensions which cause the WindowServer error
+        let panelHeight = max(fittingSize.height, 100)
         let panelX = buttonRect.midX - panelWidth / 2
         let panelY = buttonRect.minY - panelHeight - 4
 
+        // Clamp to screen bounds
+        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let clampedX = max(screenFrame.minX, min(panelX, screenFrame.maxX - panelWidth))
+        let clampedY = max(screenFrame.minY, min(panelY, screenFrame.maxY - panelHeight))
+
         let panel = NSPanel(
-            contentRect: NSRect(x: panelX, y: panelY, width: panelWidth, height: panelHeight),
+            contentRect: NSRect(x: clampedX, y: clampedY, width: panelWidth, height: panelHeight),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false

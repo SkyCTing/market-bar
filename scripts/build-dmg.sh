@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="GoldPriceBar"
 BUNDLE_ID="com.goldpricebar.app"
-VERSION="1.0.1"
+VERSION="1.0.2"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/.build"
 DIST_DIR="${PROJECT_DIR}/dist"
