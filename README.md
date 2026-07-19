@@ -1,6 +1,6 @@
 # GoldPriceBar
 
-macOS 状态栏黄金积存金实时价格监控应用。
+macOS 状态栏与 Windows 任务栏黄金积存金实时价格监控应用。
 
 积存金数据来源于京东金额。https://gold-price-pro.pf.jd.com/
 
@@ -30,8 +30,16 @@ macOS 状态栏黄金积存金实时价格监控应用。
 
 ### 设置持久化
 
-- 数据源、刷新频率、高低价提醒阈值均通过 `UserDefaults` 持久化
+- macOS 使用 `UserDefaults`，Windows 使用 `%LocalAppData%/GoldPriceBar/settings.json`
+- 数据源、刷新频率、高低价提醒及浮动人物状态都会持久化
 - 退出重启后自动恢复上次设置
+
+### Windows 常驻价格条
+
+- Windows 通知区域保留应用图标，并在主任务栏通知区域旁始终显示原生紧凑价格条
+- 价格条显示数据源、金价及涨跌幅，悬停或左键打开行情详情，右键打开完整设置菜单
+- 按住价格条左键可跨屏拖动；靠近屏幕边缘时自动吸附，并始终限制在任务栏以外的可见工作区内
+- 拖动位置仅在本次运行期间保留，重启后恢复到主任务栏附近；显示器或 DPI 变化时会自动修正当前位置
 
 ### 桌面浮动人物
 
@@ -52,8 +60,8 @@ macOS 状态栏黄金积存金实时价格监控应用。
 
 ## 系统要求
 
-- macOS 13.0 (Ventura) 及以上
-- Swift 6.2+
+- macOS：macOS 13.0 (Ventura) 及以上、Swift 6.2+
+- Windows：Windows 10 22H2 / Windows 11 x64；便携包已自包含 .NET 10，无需单独安装运行时
 
 ## 代码结构
 
@@ -69,14 +77,19 @@ goldPriceBar/
 ├── Artwork/FloatingCharacterActionSources/    # 新增动作的绿幕源图与透明母版
 ├── Artwork/FloatingCharacterDockedSources/    # 贴边人物生成源图与透明母版
 ├── Tests/goldPriceBarTests/                   # 浮动人物逻辑测试
+├── Windows/
+│   ├── GoldPriceBar.Core/                     # 跨 UI 的接口、解析、设置与行为策略
+│   ├── GoldPriceBar.Windows/                  # .NET 10 WPF Windows 客户端
+│   └── GoldPriceBar.Core.Tests/               # Windows 核心逻辑测试
 ├── scripts/
-│   └── build-dmg.sh                           # DMG 打包脚本
+│   ├── build-dmg.sh                           # DMG 打包脚本
+│   └── build-windows.ps1                      # Windows 便携包脚本
 └── dist/                                      # 打包产出目录
     ├── GoldPriceBar.app                       # macOS 应用包
     └── GoldPriceBar-1.0.2.dmg                 # DMG 安装包
 ```
 
-## 运行方式
+## macOS 运行方式
 
 ### 方式一：Xcode 运行
 
@@ -104,13 +117,30 @@ bash scripts/build-dmg.sh
 - `GoldPriceBar.app` — macOS 应用包
 - `GoldPriceBar-1.0.2.dmg` — DMG 安装包（含 Applications 快捷方式，可拖拽安装）
 
+## Windows 开发与发布
+
+在 Windows 10/11 安装 .NET 10 SDK 后运行：
+
+```powershell
+dotnet run --project Windows/GoldPriceBar.Windows/GoldPriceBar.Windows.csproj
+```
+
+执行测试并生成无需安装的 x64 便携 ZIP：
+
+```powershell
+./scripts/build-windows.ps1
+```
+
+产出文件为 `dist/GoldPriceBar-Windows-x64-1.0.2.zip`。GitHub Actions 中的 `Windows Build` 工作流也会自动测试并上传该产物。
+
 ## 技术实现
 
 | 模块 | 技术方案 |
 |------|----------|
-| UI 框架 | AppKit（NSStatusBar + NSMenu） |
-| 网络请求 | URLSession + async/await |
-| 数据解析 | JSONDecoder（Codable） |
-| 通知提醒 | 自定义悬浮 Toast 窗口（NSPanel） |
-| 数据持久化 | UserDefaults |
-| 并发安全 | Swift Strict Concurrency（@MainActor） |
+| macOS UI | AppKit（NSStatusBar + NSMenu） |
+| Windows UI | .NET 10 WPF + NotifyIcon |
+| 网络请求 | URLSession / HttpClient + async/await |
+| 数据解析 | JSONDecoder / System.Text.Json |
+| 通知提醒 | 双端自定义悬浮 Toast 窗口 |
+| 数据持久化 | UserDefaults / JSON 原子写入 |
+| 并发安全 | Swift Strict Concurrency / WPF Dispatcher |

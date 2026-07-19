@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoldPriceBar.Core", "GoldPriceBar.Core\GoldPriceBar.Core.csproj", "{B8F25008-35E4-49D4-B1AB-3C3F9033390E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoldPriceBar.Windows", "GoldPriceBar.Windows\GoldPriceBar.Windows.csproj", "{8975E0C9-0C88-4785-874C-A9640827D33F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoldPriceBar.Core.Tests", "GoldPriceBar.Core.Tests\GoldPriceBar.Core.Tests.csproj", "{24E9408C-B341-4F47-B29D-A8DE40AE116C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B8F25008-35E4-49D4-B1AB-3C3F9033390E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8F25008-35E4-49D4-B1AB-3C3F9033390E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8F25008-35E4-49D4-B1AB-3C3F9033390E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8F25008-35E4-49D4-B1AB-3C3F9033390E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8975E0C9-0C88-4785-874C-A9640827D33F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8975E0C9-0C88-4785-874C-A9640827D33F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8975E0C9-0C88-4785-874C-A9640827D33F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8975E0C9-0C88-4785-874C-A9640827D33F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{24E9408C-B341-4F47-B29D-A8DE40AE116C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{24E9408C-B341-4F47-B29D-A8DE40AE116C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{24E9408C-B341-4F47-B29D-A8DE40AE116C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{24E9408C-B341-4F47-B29D-A8DE40AE116C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
