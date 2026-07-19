@@ -41,6 +41,17 @@ else
     echo "⚠️  AppIcon.icns not found, skipping icon"
 fi
 
+# Copy floating character sprites. The app loads these from Bundle.main when
+# running inside the packaged .app bundle.
+CHARACTER_RESOURCES="${PROJECT_DIR}/Sources/goldPriceBar/Resources/FloatingCharacter"
+if [ -d "${CHARACTER_RESOURCES}" ]; then
+    cp -R "${CHARACTER_RESOURCES}" "${APP_BUNDLE}/Contents/Resources/"
+    echo "✅ Floating character resources copied"
+else
+    echo "❌ Floating character resources not found at ${CHARACTER_RESOURCES}"
+    exit 1
+fi
+
 # Create Info.plist
 cat > "${APP_BUNDLE}/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>

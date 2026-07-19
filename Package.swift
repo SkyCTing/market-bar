@@ -10,7 +10,14 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "goldPriceBar"
+            name: "goldPriceBar",
+            resources: [
+                .process("Resources"),
+            ]
+        ),
+        .testTarget(
+            name: "goldPriceBarTests",
+            dependencies: ["goldPriceBar"]
         ),
     ]
 )

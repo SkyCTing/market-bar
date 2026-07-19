@@ -260,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let service = GoldPriceService()
+    private let floatingCharacterController = FloatingCharacterController()
 
     private var selectedProvider: GoldProvider = .zheShang
     private var refreshInterval: RefreshIntervalOption = .one
@@ -279,6 +280,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var highAlertTriggered = false
     private var lowAlertTriggered = false
     private var isMenuOpen = false
+    private var isFloatingCharacterVisible = true
+    private var floatingCharacterSize: FloatingCharacterSizeOption = .defaultOption
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -289,6 +292,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
         restartTimer()
         setupHoverTracking()
+        floatingCharacterController.setSize(floatingCharacterSize)
+        floatingCharacterController.update(
+            price: format(price: currentPrice),
+            numericPrice: currentPrice,
+            isNegative: currentPriceInfo.isNegative
+        )
+        floatingCharacterController.setVisible(isFloatingCharacterVisible)
         Task {
             await self.refreshPrice()
         }
@@ -331,6 +341,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         currentPrice = info.price
         lastUpdateTime = Date()
         updateStatusTitle()
+        floatingCharacterController.update(
+            price: format(price: currentPrice),
+            numericPrice: currentPrice,
+            isNegative: info.isNegative
+        )
         checkPriceAlerts()
 
         // Fetch market data in background and update hover panel if visible
@@ -509,6 +524,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let floatingWindowItem = NSMenuItem(title: "浮动窗口", action: nil, keyEquivalent: "")
+        let floatingWindowSubmenu = NSMenu(title: "浮动窗口")
+
+        let visibilityItem = NSMenuItem(
+            title: "显示人物",
+            action: #selector(toggleFloatingCharacter),
+            keyEquivalent: ""
+        )
+        visibilityItem.target = self
+        visibilityItem.state = isFloatingCharacterVisible ? .on : .off
+        floatingWindowSubmenu.addItem(visibilityItem)
+
+        let sizeItem = NSMenuItem(title: "调整大小", action: nil, keyEquivalent: "")
+        let sizeSubmenu = NSMenu(title: "调整大小")
+        for option in FloatingCharacterSizeOption.allCases {
+            let item = NSMenuItem(
+                title: option.title,
+                action: #selector(selectFloatingCharacterSize(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = option
+            item.state = option == floatingCharacterSize ? .on : .off
+            sizeSubmenu.addItem(item)
+        }
+        floatingWindowSubmenu.setSubmenu(sizeSubmenu, for: sizeItem)
+        floatingWindowSubmenu.addItem(sizeItem)
+
+        menu.setSubmenu(floatingWindowSubmenu, for: floatingWindowItem)
+        menu.addItem(floatingWindowItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -519,7 +567,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let provider = sender.representedObject as? GoldProvider else { return }
         selectedProvider = provider
         currentPrice = 0
+        currentPriceInfo = .empty
         updateStatusTitle()
+        floatingCharacterController.resetQuoteHistory()
+        floatingCharacterController.update(
+            price: format(price: currentPrice),
+            numericPrice: currentPrice,
+            isNegative: nil
+        )
         rebuildMenu()
         saveSettings()
         Task {
@@ -539,6 +594,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc
     private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc
+    private func toggleFloatingCharacter() {
+        isFloatingCharacterVisible.toggle()
+        floatingCharacterController.setVisible(isFloatingCharacterVisible)
+        rebuildMenu()
+        saveSettings()
+    }
+
+    @objc
+    private func selectFloatingCharacterSize(_ sender: NSMenuItem) {
+        guard let option = sender.representedObject as? FloatingCharacterSizeOption else { return }
+        floatingCharacterSize = option
+        floatingCharacterController.setSize(option)
+        rebuildMenu()
+        saveSettings()
     }
 
     // MARK: - Price Alert
@@ -668,6 +740,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let refreshInterval = "refreshInterval"
         static let highThreshold = "highPriceThreshold"
         static let lowThreshold = "lowPriceThreshold"
+        static let floatingCharacterVisible = "floatingCharacterVisible"
+        static let floatingCharacterSize = "floatingCharacterSize"
     }
 
     private func saveSettings() {
@@ -684,6 +758,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             defaults.removeObject(forKey: SettingsKey.lowThreshold)
         }
+        defaults.set(isFloatingCharacterVisible, forKey: SettingsKey.floatingCharacterVisible)
+        defaults.set(floatingCharacterSize.rawValue, forKey: SettingsKey.floatingCharacterSize)
     }
 
     private func loadSettings() {
@@ -700,6 +776,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if defaults.object(forKey: SettingsKey.lowThreshold) != nil {
             lowPriceThreshold = defaults.double(forKey: SettingsKey.lowThreshold)
+        }
+        if defaults.object(forKey: SettingsKey.floatingCharacterVisible) != nil {
+            isFloatingCharacterVisible = defaults.bool(forKey: SettingsKey.floatingCharacterVisible)
+        }
+        if let rawSize = defaults.object(forKey: SettingsKey.floatingCharacterSize) as? Double,
+           let size = FloatingCharacterSizeOption(rawValue: rawSize) {
+            floatingCharacterSize = size
         }
     }
 
@@ -1276,4 +1359,3 @@ struct GoldPriceBarApp {
         app.run()
     }
 }
-
