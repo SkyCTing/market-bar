@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $WindowsRoot = Join-Path $Root "Windows"
 $PublishDir = Join-Path $Root "dist/windows/GoldPriceBar-Windows-x64"
-$ZipPath = Join-Path $Root "dist/GoldPriceBar-Windows-x64-1.0.2.zip"
+$ZipPath = Join-Path $Root "dist/GoldPriceBar-Windows-x64-1.0.3.zip"
 
 Write-Host "Running Windows tests..."
 dotnet test (Join-Path $WindowsRoot "GoldPriceBar.sln") -c $Configuration

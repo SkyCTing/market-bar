@@ -26,4 +26,4 @@ dotnet run --project Windows/GoldPriceBar.Windows/GoldPriceBar.Windows.csproj
 ./scripts/build-windows.ps1
 ```
 
-脚本会运行测试并生成自包含的 `dist/GoldPriceBar-Windows-x64-1.0.2.zip`。用户解压后直接运行 `GoldPriceBar.exe`，无需安装 .NET。
+脚本会运行测试并生成自包含的 `dist/GoldPriceBar-Windows-x64-1.0.3.zip`。用户解压后直接运行 `GoldPriceBar.exe`，无需安装 .NET。

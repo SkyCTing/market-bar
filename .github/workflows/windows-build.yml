@@ -32,6 +32,6 @@ jobs:
       - name: Upload portable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: GoldPriceBar-Windows-x64-1.0.2
-          path: dist/GoldPriceBar-Windows-x64-1.0.2.zip
+          name: GoldPriceBar-Windows-x64-1.0.3
+          path: dist/GoldPriceBar-Windows-x64-1.0.3.zip
           if-no-files-found: error

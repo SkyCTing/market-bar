@@ -131,7 +131,7 @@ dotnet run --project Windows/GoldPriceBar.Windows/GoldPriceBar.Windows.csproj
 ./scripts/build-windows.ps1
 ```
 
-产出文件为 `dist/GoldPriceBar-Windows-x64-1.0.2.zip`。GitHub Actions 中的 `Windows Build` 工作流也会自动测试并上传该产物。
+产出文件为 `dist/GoldPriceBar-Windows-x64-1.0.3.zip`。GitHub Actions 中的 `Windows Build` 工作流也会自动测试并上传该产物。
 
 ## 技术实现
 
