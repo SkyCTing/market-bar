@@ -106,6 +106,7 @@ final class ChatInputTextView: NSTextView {
 final class ClaudeChatView: NSView {
     var onSend: ((String) -> Void)?
     var onNewSession: (() -> Void)?
+    var onEditSession: (() -> Void)?
     var onCancel: (() -> Void)?
     var onPickExecutable: (() -> Void)?
 
@@ -118,6 +119,7 @@ final class ClaudeChatView: NSView {
     private let statusLabel = NSTextField(labelWithString: "")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
     private let newSessionButton = NSButton(title: "新会话", target: nil, action: nil)
+    private let sessionButton = NSButton(title: "会话…", target: nil, action: nil)
     private let pickExecutableButton = NSButton(title: "选择 claude 路径…", target: nil, action: nil)
     private var inputHeightConstraint: NSLayoutConstraint?
     private var isSending = false
@@ -220,7 +222,7 @@ final class ClaudeChatView: NSView {
         statusLabel.textColor = ClaudeChatPalette.label
         statusLabel.lineBreakMode = .byTruncatingTail
 
-        for button in [newSessionButton, pickExecutableButton] {
+        for button in [newSessionButton, pickExecutableButton, sessionButton] {
             button.isBordered = false
             button.font = .systemFont(ofSize: 11)
             button.contentTintColor = ClaudeChatPalette.label
@@ -229,6 +231,8 @@ final class ClaudeChatView: NSView {
         }
         newSessionButton.target = self
         newSessionButton.action = #selector(handleNewSession)
+        sessionButton.target = self
+        sessionButton.action = #selector(handleEditSession)
         pickExecutableButton.target = self
         pickExecutableButton.action = #selector(handlePickExecutable)
         pickExecutableButton.isHidden = true
@@ -329,12 +333,14 @@ final class ClaudeChatView: NSView {
             titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             statusLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 8),
             statusLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: newSessionButton.leadingAnchor, constant: -8),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: sessionButton.leadingAnchor, constant: -8),
 
             pickExecutableButton.trailingAnchor.constraint(equalTo: newSessionButton.leadingAnchor, constant: -12),
             pickExecutableButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             newSessionButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
             newSessionButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            sessionButton.trailingAnchor.constraint(equalTo: newSessionButton.leadingAnchor, constant: -12),
+            sessionButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
             headerDivider.topAnchor.constraint(equalTo: header.bottomAnchor),
             headerDivider.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -385,6 +391,10 @@ final class ClaudeChatView: NSView {
 
     @objc private func handleNewSession() {
         onNewSession?()
+    }
+
+    @objc private func handleEditSession() {
+        onEditSession?()
     }
 
     @objc private func handlePickExecutable() {

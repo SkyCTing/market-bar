@@ -30,6 +30,13 @@ final class ClaudeChatController {
         self.workingDirectory = defaults.string(forKey: Key.workingDirectory)
             .map { URL(fileURLWithPath: $0) }
             ?? URL(fileURLWithPath: NSHomeDirectory())
+
+        // 全新安装 / 换过工作目录时没有存过会话 id：接管该目录下最近用过的那个会话，
+        // 这样能接上之前在终端或旧版本里聊的内容，而不是从空会话开始
+        if self.sessionState.sessionID == nil, let adopted = ClaudeChatHistory.mostRecentSessionID(in: self.workingDirectory) {
+            self.sessionState = ClaudeChatSessionState(sessionID: adopted)
+            defaults.set(adopted.uuidString, forKey: Key.sessionID)
+        }
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -75,10 +82,21 @@ final class ClaudeChatController {
     private func loadHistory(into view: ClaudeChatView) {
         guard let sessionID = sessionState.sessionID else {
             view.append(ChatMessage(role: .system, text: "右键随时叫我。消息会记在同一个会话里。"))
+            view.append(ChatMessage(role: .system, text: "历史诊断：本地还没有会话 id（发一条消息就会创建）"))
             return
         }
 
-        let history = ChatTranscriptStore.load(sessionID: sessionID)
+        // 先读 app 自己存的（快且实测可用），没有再试 CLI 的会话文件
+        var history = ChatTranscriptStore.load(sessionID: sessionID)
+        let storeCount = history.count
+        let file = ClaudeChatHistory.sessionFile(sessionID: sessionID, workingDirectory: workingDirectory)
+        let fileBytes = (try? Data(contentsOf: file))?.count ?? -1
+        var fileCount = 0
+        if history.isEmpty {
+            history = ClaudeChatHistory.messages(from: file)
+            fileCount = history.count
+        }
+
         guard !history.isEmpty else {
             view.append(ChatMessage(role: .system, text: "右键随时叫我。消息会记在同一个会话里。"))
             return
@@ -112,6 +130,7 @@ final class ClaudeChatController {
         view.onSend = { [weak self] text in self?.send(text) }
         view.onCancel = { [weak self] in self?.cancelInFlight() }
         view.onNewSession = { [weak self] in self?.startNewSession() }
+        view.onEditSession = { [weak self] in self?.promptForSession() }
         view.onPickExecutable = { [weak self] in self?.promptForExecutable() }
         view.setStatus("复用同一个会话")
         chatView = view
@@ -185,6 +204,38 @@ final class ClaudeChatController {
         chatView?.append(ChatMessage(role: .system, text: "—— 新会话 ——"))
         chatView?.setStatus("已开新会话")
         chatView?.focusInput()
+    }
+
+    /// 查看/修改复用的会话 id：粘一个已有 id 进来就能接管那个会话（比如终端里聊过的）
+    private func promptForSession() {
+        let alert = NSAlert()
+        alert.messageText = "复用的会话"
+        alert.informativeText = "粘贴一个会话 id 可接管该会话；留空表示下次从新会话开始。"
+        alert.addButton(withTitle: "使用")
+        alert.addButton(withTitle: "取消")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        input.placeholderString = "例如 D09437B2-A9EC-4800-BFA8-B05AABABB4D9"
+        input.stringValue = sessionState.sessionID?.uuidString ?? ""
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let raw = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty {
+            sessionState.reset()
+            saveSession()
+            chatView?.clearTranscript()
+            chatView?.append(ChatMessage(role: .system, text: "已清空会话，下次发送会开新会话"))
+        } else if let id = UUID(uuidString: raw) {
+            sessionState = ClaudeChatSessionState(sessionID: id)
+            saveSession()
+            chatView?.clearTranscript()
+            loadHistory(into: chatView ?? ClaudeChatView())
+        } else {
+            chatView?.append(ChatMessage(role: .error, text: "会话 id 格式不对：\(raw)"))
+        }
     }
 
     // MARK: - 发送

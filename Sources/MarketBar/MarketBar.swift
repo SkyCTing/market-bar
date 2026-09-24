@@ -1422,6 +1422,7 @@ final class HoverPanel {
     private var marketValueLabels: [String: NSTextField] = [:]
     private var stockValueLabels: [String: NSTextField] = [:]
     private var stockTitleLabels: [String: NSTextField] = [:]
+    private var stockVolumeLabels: [String: NSTextField] = [:]
     private var stockSharesLabels: [String: NSTextField] = [:]
     private var stockProfitLabels: [String: NSTextField] = [:]
 
@@ -1429,16 +1430,18 @@ final class HoverPanel {
     // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
     // 数值列宽度按实测的最宽内容定：股数 "1,100,000" 55.6pt、现价 "3936.52  -0.39%" 93.6pt、
     // 盈亏 "-1,234,567" 62.5pt；名称列吃剩余宽度（最宽 129.9pt）。
-    static let panelWidth: CGFloat = 410
+    static let panelWidth: CGFloat = 440
     static let padding: CGFloat = 16
     static let columnGap: CGFloat = 8
+    static let volumeColumnWidth: CGFloat = 74
     static let sharesColumnWidth: CGFloat = 58
     static let priceColumnWidth: CGFloat = 96
     static let profitColumnWidth: CGFloat = 64
-    static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 3
-        - sharesColumnWidth - priceColumnWidth - profitColumnWidth
+    static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 4
+        - volumeColumnWidth - sharesColumnWidth - priceColumnWidth - profitColumnWidth
 
     // 列表头文字（列宽测试会拿它们量宽度）
+    static let volumeHeader = "量能"
     static let sharesHeader = "股数"
     static let priceHeader = "现价"
     static let profitHeader = "当日盈亏"
@@ -1547,6 +1550,8 @@ final class HoverPanel {
         // 名称列：唯一允许被截断的一列，所以压缩阻力最低
         func makeStockTitleLabel() -> NSTextField {
             let label = NSTextField(labelWithString: "")
+            // 名称列的颜色要和其他标签一致（拆列时漏了这行，导致名称变成系统默认的亮白）
+            label.textColor = labelColor
             label.lineBreakMode = .byTruncatingTail
             label.usesSingleLineMode = true
             label.maximumNumberOfLines = 1
@@ -1562,14 +1567,15 @@ final class HoverPanel {
             let label = NSTextField(labelWithString: text)
             label.font = .monospacedDigitSystemFont(ofSize: 11, weight: weight)
             label.textColor = color
-            label.alignment = .right
+            // 整张表都左对齐：每列起始位置固定，读起来是整齐的表格
+            label.alignment = .left
             label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(751), for: .horizontal)
             label.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(label)
             return label
         }
 
-        var stockRowCells: [(title: NSTextField, shares: NSTextField, value: NSTextField, profit: NSTextField)] = []
+        var stockRowCells: [(title: NSTextField, volume: NSTextField, shares: NSTextField, value: NSTextField, profit: NSTextField)] = []
 
         // 列表头。名称格给一个空格而不是空串：NSTextField 空串的固有高度是 0，
         // 会把这一行压扁（行高取自名称格）。
@@ -1577,6 +1583,7 @@ final class HoverPanel {
         headerTitle.stringValue = " "
         stockRowCells.append((
             headerTitle,
+            makeStockCell(Self.volumeHeader, weight: .medium, color: labelColor),
             makeStockCell(Self.sharesHeader, weight: .regular, color: labelColor),
             makeStockCell(Self.priceHeader, weight: .regular, color: labelColor),
             makeStockCell(Self.profitHeader, weight: .regular, color: labelColor)
@@ -1585,9 +1592,15 @@ final class HoverPanel {
         for row in data.stocks {
             let quote = row.quote
 
-            // 名称 + 量能倍数放在同一个 label 里（富文本），截断策略写在段落样式里
+            // 名称单独一列；倍数与「放量/缩量」各占一列，这样数字才能竖向对齐
             let tl = makeStockTitleLabel()
-            tl.attributedStringValue = HoverPalette.stockTitle(name: quote.name, ratio: row.volumeRatio)
+            tl.stringValue = quote.name
+
+            let volumeLabel = makeStockCell(
+                StockVolume.volumeText(row.volumeRatio),
+                weight: .medium,
+                color: HoverPalette.volumeColor(for: StockVolume.word(for: row.volumeRatio))
+            )
 
             let sharesLabel = makeStockCell(row.sharesText, weight: .regular, color: valueColor)
             let vl = makeStockCell(
@@ -1601,8 +1614,9 @@ final class HoverPanel {
                 color: HoverPalette.trendColor(row.profitLoss, fallback: valueColor)
             )
 
-            stockRowCells.append((tl, sharesLabel, vl, profitLabel))
+            stockRowCells.append((tl, volumeLabel, sharesLabel, vl, profitLabel))
             stockTitleLabels[quote.code] = tl
+            stockVolumeLabels[quote.code] = volumeLabel
             stockSharesLabels[quote.code] = sharesLabel
             stockValueLabels[quote.code] = vl
             stockProfitLabels[quote.code] = profitLabel
@@ -1687,39 +1701,27 @@ final class HoverPanel {
         prev = stockSectionTitle.bottomAnchor
         for (i, cells) in stockRowCells.enumerated() {
             let top: CGFloat = i == 0 ? 8 : 5
+            // 每列都是固定宽度、左对齐，所以每行的每一列都从同一 x 开始 —— 这样才齐
             constraints.append(contentsOf: [
                 cells.title.topAnchor.constraint(equalTo: prev, constant: top),
                 cells.title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+                cells.title.widthAnchor.constraint(equalToConstant: Self.nameColumnWidth),
 
-                cells.profit.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
-                cells.profit.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.volume.leadingAnchor.constraint(equalTo: cells.title.trailingAnchor, constant: columnGap),
+                cells.volume.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.volume.widthAnchor.constraint(equalToConstant: Self.volumeColumnWidth),
 
-                // 数值列的右边缘钉在常量偏移上：数字位数每秒变化也不会让整列左右滑动。
-                // 用 999 而不是 required：万一某列内容超宽，是整列左滑，
-                // 而不是打出 "Unable to simultaneously satisfy constraints"。
-                priority(
-                    cells.value.trailingAnchor.constraint(
-                        equalTo: cells.profit.trailingAnchor,
-                        constant: -(Self.profitColumnWidth + columnGap)
-                    ),
-                    999
-                ),
-                cells.value.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
-
-                priority(
-                    cells.shares.trailingAnchor.constraint(
-                        equalTo: cells.value.trailingAnchor,
-                        constant: -(Self.priceColumnWidth + columnGap)
-                    ),
-                    999
-                ),
+                cells.shares.leadingAnchor.constraint(equalTo: cells.volume.trailingAnchor, constant: columnGap),
                 cells.shares.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.shares.widthAnchor.constraint(equalToConstant: Self.sharesColumnWidth),
 
-                // 名称列吃掉剩下的宽度，挤不下时由它截断
-                cells.title.trailingAnchor.constraint(
-                    lessThanOrEqualTo: cells.shares.leadingAnchor,
-                    constant: -columnGap
-                ),
+                cells.value.leadingAnchor.constraint(equalTo: cells.shares.trailingAnchor, constant: columnGap),
+                cells.value.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.value.widthAnchor.constraint(equalToConstant: Self.priceColumnWidth),
+
+                cells.profit.leadingAnchor.constraint(equalTo: cells.value.trailingAnchor, constant: columnGap),
+                cells.profit.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.profit.widthAnchor.constraint(equalToConstant: Self.profitColumnWidth),
             ])
             prev = cells.title.bottomAnchor
         }
@@ -1826,8 +1828,10 @@ final class HoverPanel {
             stockValueLabels[quote.code]?.stringValue =
                 formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
             stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
-            stockTitleLabels[quote.code]?.attributedStringValue =
-                HoverPalette.stockTitle(name: quote.name, ratio: row.volumeRatio)
+            stockTitleLabels[quote.code]?.stringValue = quote.name
+            stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
+            stockVolumeLabels[quote.code]?.textColor =
+                HoverPalette.volumeColor(for: StockVolume.word(for: row.volumeRatio))
 
             // 持仓两列：无持仓时是空串（留白）
             stockSharesLabels[quote.code]?.stringValue = row.sharesText
@@ -1845,6 +1849,7 @@ final class HoverPanel {
         marketValueLabels.removeAll()
         stockValueLabels.removeAll()
         stockTitleLabels.removeAll()
+        stockVolumeLabels.removeAll()
         stockSharesLabels.removeAll()
         stockProfitLabels.removeAll()
         NSAnimationContext.runAnimationGroup({ context in

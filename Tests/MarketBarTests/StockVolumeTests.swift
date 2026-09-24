@@ -166,21 +166,37 @@ final class StockVolumeTests: XCTestCase {
 
     // MARK: - 名称列富文本
 
-    @MainActor
-    func testStockTitleAppendsColoredTail() {
-        let title = HoverPalette.stockTitle(name: "医疗ETF华宝", ratio: 1.5)
-        XCTAssertEqual(title.string, "医疗ETF华宝" + StockVolume.tailText(ratio: 1.5))
+}
 
-        let nameLength = ("医疗ETF华宝" as NSString).length
-        let tailRange = NSRange(location: nameLength, length: (title.string as NSString).length - nameLength)
-        XCTAssertEqual(title.attribute(.foregroundColor, at: nameLength, effectiveRange: nil) as? NSColor, HoverPalette.rise)
-        XCTAssertEqual(title.attribute(.foregroundColor, at: tailRange.location, effectiveRange: nil) as? NSColor, HoverPalette.rise)
+/// 量能拆成「倍数」和「标记」两列后的文本规则
+final class StockVolumeColumnTests: XCTestCase {
+    func testRatioTextKeepsTwoDecimalsBelowTen() {
+        XCTAssertEqual(StockVolume.ratioText(1.954), "1.95")
+        XCTAssertEqual(StockVolume.ratioText(0.827), "0.83")
+        XCTAssertEqual(StockVolume.ratioText(12.34), "12.3")
+        XCTAssertEqual(StockVolume.ratioText(nil), "--")
+    }
 
-        let shrinking = HoverPalette.stockTitle(name: "医疗ETF华宝", ratio: 0.5)
-        XCTAssertEqual(shrinking.attribute(.foregroundColor, at: nameLength, effectiveRange: nil) as? NSColor, HoverPalette.fall)
+    /// 倍数补齐到固定宽度，这样每行的标记都从同一列开始
+    func testVolumeTextPadsRatioToFixedWidth() {
+        XCTAssertEqual(StockVolume.volumeText(1.83), "1.83 放量")
+        XCTAssertEqual(StockVolume.volumeText(0.63), "0.63 缩量")
+        XCTAssertEqual(StockVolume.volumeText(1.10), "1.10")   // 中性区间不标词
+        XCTAssertEqual(StockVolume.volumeText(12.34), "12.3 放量")
+        XCTAssertEqual(StockVolume.volumeText(nil), "--  ")
 
-        let neutral = HoverPalette.stockTitle(name: "医疗ETF华宝", ratio: nil)
-        XCTAssertEqual(neutral.string, "医疗ETF华宝 --")
-        XCTAssertEqual(neutral.attribute(.foregroundColor, at: nameLength, effectiveRange: nil) as? NSColor, HoverPalette.labelText)
+        // 有标记的几行，标记都必须从第 6 个字符开始
+        for ratio in [1.83, 0.63, 12.34] {
+            let text = StockVolume.volumeText(ratio)
+            let wordIndex = text.distance(from: text.startIndex, to: text.firstIndex { $0 == "放" || $0 == "缩" }!)
+            XCTAssertEqual(wordIndex, 5, "\(text) 的标记应该从固定位置开始")
+        }
+    }
+
+    func testWordTextOnlyForExpansionAndShrinkage() {
+        XCTAssertEqual(StockVolume.wordText(for: 1.5), "放量")
+        XCTAssertEqual(StockVolume.wordText(for: 0.5), "缩量")
+        XCTAssertEqual(StockVolume.wordText(for: 1.0), "")
+        XCTAssertEqual(StockVolume.wordText(for: nil), "")
     }
 }

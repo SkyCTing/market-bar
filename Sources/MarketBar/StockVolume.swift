@@ -118,6 +118,36 @@ enum StockVolume {
         return .none
     }
 
+    /// 倍数本身（右对齐用）："1.95" / "12.3" / "--"
+    static func ratioText(_ ratio: Double?) -> String {
+        guard let ratio else { return "--" }
+        let value = normalized(ratio)
+        return value < 10 ? String(format: "%.2f", value) : String(format: "%.1f", value)
+    }
+
+    /// 标记（单独一列，左对齐）："放量" / "缩量" / ""（中性不标）
+    static func wordText(for ratio: Double?) -> String {
+        switch word(for: ratio) {
+        case .expansion: return "放量"
+        case .shrinkage: return "缩量"
+        case .none: return ""
+        }
+    }
+
+    /// 量能列的完整文本：倍数补齐到固定宽度、后面紧跟标记，读起来像一列文字
+    /// "1.83 放量" / "0.63 缩量" / "1.26" / "--"
+    static func volumeText(_ ratio: Double?) -> String {
+        let number = ratioText(ratio)
+        let padded = number.count >= ratioColumnCharacterWidth
+            ? number
+            : number + String(repeating: " ", count: ratioColumnCharacterWidth - number.count)
+        let word = wordText(for: ratio)
+        return word.isEmpty ? padded : padded + " " + word
+    }
+
+    /// 倍数文本的固定字符宽度（"1.83"、"12.3" 都是 4；"--" 补齐成 4）
+    static let ratioColumnCharacterWidth = 4
+
     /// 名称列后面的尾巴文本：" 0.83" / " 0.47 缩量" / " 12.3 放量" / " --"
     static func tailText(ratio: Double?) -> String {
         guard let ratio else { return " --" }
@@ -176,23 +206,4 @@ enum HoverPalette {
         }
     }
 
-    /// 名称列的富文本：灰色名称 + 着色的量能尾巴。
-    /// 数字用等宽数字字体，否则每秒刷新时位数变化会让整段左右抖动。
-    /// 截断方式写进段落样式 —— 用 attributedStringValue 之后由它决定怎么截断。
-    static func stockTitle(name: String, ratio: Double?) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-
-        let text = NSMutableAttributedString(string: name, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: labelText,
-            .paragraphStyle: paragraph,
-        ])
-        text.append(NSAttributedString(string: StockVolume.tailText(ratio: ratio), attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: volumeColor(for: StockVolume.word(for: ratio)),
-            .paragraphStyle: paragraph,
-        ]))
-        return text
-    }
 }
