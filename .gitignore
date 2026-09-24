@@ -5,6 +5,4 @@ xcuserdata/
 DerivedData/
 .swiftpm/
 .netrc
-**/bin/
-**/obj/
 dist/
