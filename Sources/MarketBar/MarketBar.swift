@@ -1110,6 +1110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 当日盈亏是否显示（交易日 09:00–15:30 之外不显示）
+    private var showsTodayProfit: Bool {
+        TradingDayDisplay.showsTodayProfit(at: Date(), holidays: holidays)
+    }
+
     private func buildHoverPanelData() -> HoverPanelData {
         let info = currentPriceInfo
         let timeStr: String
@@ -1143,7 +1148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             stocks: StockWatchlist.entries.map { entry in
                 let quote = currentStockQuotes[entry.code]
                     ?? .placeholder(code: entry.code, name: entry.name)
-                return StockRow(quote: quote, volumeRatio: stockVolumeRatio(for: quote))
+                return StockRow(
+                    quote: quote,
+                    volumeRatio: stockVolumeRatio(for: quote),
+                    showsProfitLoss: showsTodayProfit
+                )
             }
         )
     }
@@ -1198,6 +1207,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ///
     /// 按自选清单顺序取行情再求和：顺序稳定，结果可复现。
     private func totalProfitLossText() -> String? {
+        // 盘前/收盘后/非交易日不显示盈亏
+        guard showsTodayProfit else { return nil }
+
         var quotesByCode: [String: StockQuote] = [:]
         for code in StockWatchlist.codes {
             quotesByCode[code] = currentStockQuotes[code]

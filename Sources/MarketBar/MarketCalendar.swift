@@ -56,6 +56,25 @@ enum MarketCalendar {
     }
 }
 
+/// 当日盈亏的显示时段：只在交易日的 09:00–15:30 之间显示，
+/// 盘前、收盘后、以及非交易日都不显示（用户要求）。
+enum TradingDayDisplay {
+    static let profitStartMinute = 9 * 60        // 09:00
+    static let profitEndMinute = 15 * 60 + 30    // 15:30
+
+    static func showsTodayProfit(
+        at date: Date,
+        holidays: [String: String],
+        calendar: Calendar = TradingSession.calendar
+    ) -> Bool {
+        guard MarketCalendar.isTradingDay(date, holidays: holidays, calendar: calendar) else { return false }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { return false }
+        let now = hour * 60 + minute
+        return now >= profitStartMinute && now <= profitEndMinute
+    }
+}
+
 /// 休市时举牌上显示的问候语（代替金价与盈亏数字）
 enum MarketClosedGreeting {
     static let headlines = ["今天休市"]

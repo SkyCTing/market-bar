@@ -83,3 +83,27 @@ final class MarketCalendarTests: XCTestCase {
         XCTAssertEqual(first.greeting, second.greeting)
     }
 }
+
+/// 当日盈亏的显示时段（用户要求：盘前、收盘后、非交易日都不显示）
+final class TradingDayDisplayTests: XCTestCase {
+    private let calendar = TradingSession.calendar
+
+    private func at(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
+    }
+
+    func testShowsOnlyDuringTradingHours() {
+        XCTAssertFalse(TradingDayDisplay.showsTodayProfit(at: at(23, 8, 59), holidays: [:]))   // 09:00 前
+        XCTAssertTrue(TradingDayDisplay.showsTodayProfit(at: at(23, 9, 0), holidays: [:]))     // 09:00
+        XCTAssertTrue(TradingDayDisplay.showsTodayProfit(at: at(23, 12, 0), holidays: [:]))    // 午休也显示
+        XCTAssertTrue(TradingDayDisplay.showsTodayProfit(at: at(23, 15, 30), holidays: [:]))   // 15:30
+        XCTAssertFalse(TradingDayDisplay.showsTodayProfit(at: at(23, 15, 31), holidays: [:]))  // 15:30 后不显示
+        XCTAssertFalse(TradingDayDisplay.showsTodayProfit(at: at(23, 20, 0), holidays: [:]))
+    }
+
+    func testHidesOnWeekendAndHoliday() {
+        XCTAssertFalse(TradingDayDisplay.showsTodayProfit(at: at(26, 10, 0), holidays: [:]))   // 周六
+        XCTAssertFalse(TradingDayDisplay.showsTodayProfit(at: at(27, 10, 0), holidays: [:]))   // 周日
+        XCTAssertFalse(TradingDayDisplay.showsTodayProfit(at: at(23, 10, 0), holidays: ["2026-09-23": "调休"]))
+    }
+}

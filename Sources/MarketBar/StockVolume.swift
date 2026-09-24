@@ -166,6 +166,8 @@ enum StockVolume {
 struct StockRow: Sendable {
     let quote: StockQuote
     let volumeRatio: Double?
+    /// 当日盈亏是否显示（盘前/收盘后/非交易日为 false，单元格留空）
+    var showsProfitLoss: Bool = true
 
     // 持仓相关都做成计算属性：构造点不用改，也不会和持仓表或行情漂移。
 
@@ -173,7 +175,10 @@ struct StockRow: Sendable {
     var shares: Int? { StockHoldings.shares(for: quote.code) }
 
     /// 当日盈亏（元）；无持仓 / 无行情 / 涨跌额异常时为 nil
-    var profitLoss: Double? { StockProfitLoss.todayProfit(quote, shares: shares) }
+    var profitLoss: Double? {
+        guard showsProfitLoss else { return nil }
+        return StockProfitLoss.todayProfit(quote, shares: shares)
+    }
 
     /// 面板单元格文本：无持仓时是**空串**（留白），不是 "--"
     var sharesText: String { shares.map(HoldingFormat.sharesText) ?? "" }
