@@ -18,27 +18,35 @@ enum UnreadBadge {
     static let mainBundleID = "com.tencent.xinWeChat"
     static let secondBundleID = "com.tencent.xinWeChatSecond"
 
-    /// 打开对应的微信：没运行就启动它；运行中就把窗口带到前面。
+    /// 打开对应的微信（把它的窗口带到前面）；没运行就启动它。
     ///
-    /// 两条路都要走：
-    /// - macOS 14+ 是「协作式激活」，后台 app 直接 `activate` 可能被拒（返回值 false），
-    ///   所以失败时退回交系统 `openApplication` 再激活一次；
-    /// - 微信没在运行时，原来的实现是**静默什么都不做**，这里补上启动。
+    /// 顺序有讲究：**优先用 AppleScript 的 `activate`** —— 它最接近「点 Dock 图标」的行为，
+    /// 对隐藏窗口也管用（实测直接 `NSRunningApplication.activate` 对主微星常常无效，
+    /// 加 `unhide()` 反而把它弄坏了）。失败再退回系统 openApplication / 直接激活。
+    /// 第一次会弹一次「MarketBar 想控制微信」的自动化授权。
     @MainActor
     static func activate(bundleID: String) {
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-            // 微信窗口可能是「隐藏」状态：隐藏的 app 只 activate 不会把窗口带出来，必须先 unhide
-            if app.isHidden {
-                app.unhide()
-            }
-            if app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) {
-                return
-            }
+        if activateViaAppleScript(bundleID: bundleID) { return }
+
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+            return
         }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?
+            .activate(options: [.activateAllWindows])
+    }
+
+    private static func activateViaAppleScript(bundleID: String) -> Bool {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
+              !app.isTerminated else { return false }
+
+        let source = "tell application id \"\(bundleID)\" to activate"
+        guard let script = NSAppleScript(source: source) else { return false }
+        var error: NSDictionary?
+        script.executeAndReturnError(&error)
+        return error == nil
     }
 
     /// AX title → 未读数。纯函数，便于单测。
