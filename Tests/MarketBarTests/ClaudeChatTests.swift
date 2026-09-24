@@ -345,3 +345,19 @@ final class ClaudeChatStreamParserTests: XCTestCase {
         XCTAssertEqual(value.usage?.totalTokens, 7)
     }
 }
+
+/// 微信未读徽标：状态项标题 → 数字
+final class UnreadBadgeTests: XCTestCase {
+    func testParsesUnreadCountFromStatusTitle() {
+        XCTAssertEqual(UnreadBadge.count(fromStatusTitle: "5"), 5)
+        XCTAssertEqual(UnreadBadge.count(fromStatusTitle: " 12 "), 12)
+    }
+
+    func testReturnsNilWhenNoUnread() {
+        XCTAssertNil(UnreadBadge.count(fromStatusTitle: nil))
+        XCTAssertNil(UnreadBadge.count(fromStatusTitle: ""))
+        XCTAssertNil(UnreadBadge.count(fromStatusTitle: "0"))        // 0 条 = 不显示
+        XCTAssertNil(UnreadBadge.count(fromStatusTitle: "微信"))      // 没有未读时是名字
+        XCTAssertNil(UnreadBadge.count(fromStatusTitle: "abc"))
+    }
+}

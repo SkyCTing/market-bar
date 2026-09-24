@@ -510,6 +510,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hoverPanel: HoverPanel?
     /// 右键人物弹出的 AI 聊天窗（懒创建）
     private var chatController: ClaudeChatController?
+    /// 微信未读数（面板左右两个徽标用）
+    private var unreadCounts = UnreadBadge.Counts()
     /// 法定节假日（"2026-10-01" → "国庆节"），每天刷新一次，落在本地
     private var holidays: [String: String] = [:]
     private var holidayFetchDate: Date?
@@ -603,6 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastUpdateTime = Date()
         updateStatusTitle()
         refreshHolidaysIfNeeded()
+        unreadCounts = UnreadBadge.fetch()
         updateFloatingCharacter()
         checkPriceAlerts()
 
@@ -1153,7 +1156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     volumeRatio: stockVolumeRatio(for: quote),
                     showsProfitLoss: showsTodayProfit
                 )
-            }
+            },
+            unread: unreadCounts
         )
     }
 
@@ -1263,6 +1267,7 @@ struct HoverPanelData {
     let alertInfo: String
     let market: MarketData
     let stocks: [StockRow]
+    let unread: UnreadBadge.Counts
 }
 
 // MARK: - Toast Notification Window
@@ -1435,6 +1440,9 @@ final class HoverPanel {
     private var stockValueLabels: [String: NSTextField] = [:]
     private var stockTitleLabels: [String: NSTextField] = [:]
     private var stockVolumeLabels: [String: NSTextField] = [:]
+    /// 左右两个未读徽标（左＝微信，右＝微信小号）
+    private var weChatBadge: UnreadCountBadgeView?
+    private var weChatSecondBadge: UnreadCountBadgeView?
     private var stockSharesLabels: [String: NSTextField] = [:]
     private var stockProfitLabels: [String: NSTextField] = [:]
 
@@ -1634,6 +1642,18 @@ final class HoverPanel {
             stockProfitLabels[quote.code] = profitLabel
         }
 
+        // --- 未读徽标（贴在面板左右上角）---
+        let leftBadge = UnreadCountBadgeView()
+        let rightBadge = UnreadCountBadgeView()
+        leftBadge.translatesAutoresizingMaskIntoConstraints = false
+        rightBadge.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(leftBadge)
+        container.addSubview(rightBadge)
+        weChatBadge = leftBadge
+        weChatSecondBadge = rightBadge
+        leftBadge.update(count: data.unread.weChat)
+        rightBadge.update(count: data.unread.weChatSecond)
+
         // --- Divider 2 ---
         let divider2 = makeDivider()
         container.addSubview(divider2)
@@ -1708,6 +1728,13 @@ final class HoverPanel {
         constraints.append(contentsOf: [
             stockSectionTitle.topAnchor.constraint(equalTo: prev, constant: 10),
             stockSectionTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+        ])
+
+        constraints.append(contentsOf: [
+            leftBadge.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: -6),
+            leftBadge.topAnchor.constraint(equalTo: container.topAnchor, constant: -6),
+            rightBadge.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: 6),
+            rightBadge.topAnchor.constraint(equalTo: container.topAnchor, constant: -6),
         ])
 
         prev = stockSectionTitle.bottomAnchor
@@ -1841,7 +1868,10 @@ final class HoverPanel {
                 formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
             stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
             stockTitleLabels[quote.code]?.stringValue = quote.name
-            stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
+            weChatBadge?.update(count: data.unread.weChat)
+        weChatSecondBadge?.update(count: data.unread.weChatSecond)
+
+        stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
             stockVolumeLabels[quote.code]?.textColor =
                 HoverPalette.volumeColor(for: StockVolume.word(for: row.volumeRatio))
 
@@ -1862,6 +1892,8 @@ final class HoverPanel {
         stockValueLabels.removeAll()
         stockTitleLabels.removeAll()
         stockVolumeLabels.removeAll()
+        weChatBadge = nil
+        weChatSecondBadge = nil
         stockSharesLabels.removeAll()
         stockProfitLabels.removeAll()
         NSAnimationContext.runAnimationGroup({ context in

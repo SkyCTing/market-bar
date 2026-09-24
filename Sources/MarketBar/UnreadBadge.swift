@@ -64,3 +64,46 @@ enum UnreadBadge {
         return nil
     }
 }
+
+/// 未读数字的圆形徽标（红底白字），没有未读时整颗隐藏
+@MainActor
+final class UnreadCountBadgeView: NSView {
+    static let diameter: CGFloat = 22
+
+    private let label = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedRed: 0.92, green: 0.22, blue: 0.2, alpha: 1).cgColor
+        layer?.cornerRadius = Self.diameter / 2
+        layer?.borderColor = NSColor(white: 1, alpha: 0.35).cgColor
+        layer?.borderWidth = 0.5
+
+        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+        label.textColor = .white
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            widthAnchor.constraint(equalToConstant: Self.diameter),
+            heightAnchor.constraint(equalToConstant: Self.diameter),
+        ])
+        isHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 数字为 nil 或 0 时隐藏；超过 99 显示 99+
+    func update(count: Int?) {
+        guard let count, count > 0 else {
+            isHidden = true
+            return
+        }
+        label.stringValue = count > 99 ? "99+" : "\(count)"
+        isHidden = false
+    }
+}
