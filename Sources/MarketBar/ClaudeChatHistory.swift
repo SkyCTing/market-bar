@@ -53,16 +53,13 @@ enum ClaudeChatHistory {
     /// 读文件，带重试。
     /// 实测：CLI 正在往会话文件里写的时候，直接读会拿到 ENOENT（文件"瞬间不存在"），
     /// 而稍后再读就正常 —— 所以隔一小会儿重试几次，最后再退回经登录 shell 读。
-    static func readText(at url: URL, attempts: Int = 3) -> String? {
-        for attempt in 0..<attempts {
-            if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
-                return text
-            }
-            if attempt < attempts - 1 {
-                Thread.sleep(forTimeInterval: 0.12)
-            }
+    /// 优先直接读（快），失败就走登录 shell 读 —— 实测 app 进程自己读 `~/.claude` 恒为 ENOENT，
+    /// 但 app 启动的 CLI（以及它 fork 出来的 shell）能正常访问那个目录，所以这条路走得通。
+    static func readText(at url: URL) -> String? {
+        if let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) {
+            return text
         }
-        if let data = try? readViaSubprocess(url), let text = String(data: data, encoding: .utf8) {
+        if let data = try? readViaSubprocess(url), let text = String(data: data, encoding: .utf8), !text.isEmpty {
             return text
         }
         return nil
