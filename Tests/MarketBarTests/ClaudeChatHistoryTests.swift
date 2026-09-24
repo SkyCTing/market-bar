@@ -6,6 +6,24 @@ import XCTest
 final class ClaudeChatHistoryTests: XCTestCase {
     private let sessionID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
 
+    /// cwd 转义规则：`/` 和 `.` 都换成 `-`。
+    /// 少换 `.` 会让路径指向不存在的目录（`-Users-sky.ding` vs `-Users-sky-ding`），
+    /// 表现成 ENOENT —— 之前排查了很久就是这个。
+    func testSlugReplacesDotsAsWellAsSlashes() {
+        XCTAssertEqual(
+            ClaudeChatHistory.slug(for: URL(fileURLWithPath: "/Users/sky.ding")),
+            "-Users-sky-ding"
+        )
+        XCTAssertEqual(
+            ClaudeChatHistory.slug(for: URL(fileURLWithPath: "/Users/someone")),
+            "-Users-someone"
+        )
+        XCTAssertEqual(
+            ClaudeChatHistory.slug(for: URL(fileURLWithPath: "/tmp/a.b/c")),
+            "-tmp-a-b-c"
+        )
+    }
+
     /// cwd 转义规则：`/` → `-`
     func testSessionFilePath() {
         let file = ClaudeChatHistory.sessionFile(

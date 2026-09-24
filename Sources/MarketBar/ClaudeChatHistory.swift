@@ -7,21 +7,21 @@ import Foundation
 enum ClaudeChatHistory {
     static let defaultLimit = 60
 
-    /// cwd 的转义规则：`/` 换成 `-`（`/Users/a` → `-Users-a`）
-    ///
-    /// ⚠️ 路径必须用字符串拼、再 `URL(fileURLWithPath:)`。
-    /// 实测：`FileManager.homeDirectoryForCurrentUser.appendingPathComponent(...)` 拼出来的 URL
-    /// 在 app 进程里 stat 得到 ENOENT，而同样内容的字面量绝对路径能正常读到
-    /// （同一进程内同时探两个路径：derived=false / literal=true, 1096400 字节）。
+    /// cwd 的转义规则：**`/` 和 `.` 都换成 `-`**。
+    /// ⚠️ 只换 `/` 是不够的：`/Users/sky.ding` → `-Users-sky.ding`（不是 `-Users-sky.ding` 里的点），
+    /// 少换这一个字符会让路径指向一个不存在的目录，表现成 ENOENT —— 排查了很久就是这个。
+    static func slug(for workingDirectory: URL) -> String {
+        workingDirectory.path
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+    }
+
     static func sessionFile(sessionID: UUID, workingDirectory: URL) -> URL {
-        let slug = workingDirectory.path.replacingOccurrences(of: "/", with: "-")
-        let home = NSHomeDirectory()
-        return URL(fileURLWithPath: "\(home)/.claude/projects/\(slug)/\(sessionID.uuidString).jsonl")
+        URL(fileURLWithPath: "\(NSHomeDirectory())/.claude/projects/\(slug(for: workingDirectory))/\(sessionID.uuidString).jsonl")
     }
 
     static func sessionDirectory(workingDirectory: URL) -> URL {
-        let slug = workingDirectory.path.replacingOccurrences(of: "/", with: "-")
-        return URL(fileURLWithPath: "\(NSHomeDirectory())/.claude/projects/\(slug)")
+        URL(fileURLWithPath: "\(NSHomeDirectory())/.claude/projects/\(slug(for: workingDirectory))")
     }
 
     /// 该工作目录下最近修改过的会话 id。

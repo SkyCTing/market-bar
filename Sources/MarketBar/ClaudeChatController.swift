@@ -82,19 +82,15 @@ final class ClaudeChatController {
     private func loadHistory(into view: ClaudeChatView) {
         guard let sessionID = sessionState.sessionID else {
             view.append(ChatMessage(role: .system, text: "右键随时叫我。消息会记在同一个会话里。"))
-            view.append(ChatMessage(role: .system, text: "历史诊断：本地还没有会话 id（发一条消息就会创建）"))
             return
         }
 
-        // 先读 app 自己存的（快且实测可用），没有再试 CLI 的会话文件
-        var history = ChatTranscriptStore.load(sessionID: sessionID)
-        let storeCount = history.count
+        // 首选 CLI 的会话文件（与 claude --resume 同源，覆盖整个会话，含终端里聊的）；
+        // 读不到再退回 app 自己存的那份
         let file = ClaudeChatHistory.sessionFile(sessionID: sessionID, workingDirectory: workingDirectory)
-        let fileBytes = (try? Data(contentsOf: file))?.count ?? -1
-        var fileCount = 0
+        var history = ClaudeChatHistory.messages(from: file)
         if history.isEmpty {
-            history = ClaudeChatHistory.messages(from: file)
-            fileCount = history.count
+            history = ChatTranscriptStore.load(sessionID: sessionID)
         }
 
         guard !history.isEmpty else {
