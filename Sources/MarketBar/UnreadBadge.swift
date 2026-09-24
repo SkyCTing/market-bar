@@ -18,12 +18,22 @@ enum UnreadBadge {
     static let mainBundleID = "com.tencent.xinWeChat"
     static let secondBundleID = "com.tencent.xinWeChatSecond"
 
-    /// 打开对应的微信（把它的窗口带到前面）
+    /// 打开对应的微信：没运行就启动它；运行中就把窗口带到前面。
+    ///
+    /// 两条路都要走：
+    /// - macOS 14+ 是「协作式激活」，后台 app 直接 `activate` 可能被拒（返回值 false），
+    ///   所以失败时退回交系统 `openApplication` 再激活一次；
+    /// - 微信没在运行时，原来的实现是**静默什么都不做**，这里补上启动。
     @MainActor
     static func activate(bundleID: String) {
-        guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleID).first else { return }
-        app.activate(options: [.activateAllWindows])
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
+           app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) {
+            return
+        }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
     }
 
     /// AX title → 未读数。纯函数，便于单测。
