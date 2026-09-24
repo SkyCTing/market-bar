@@ -606,6 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusTitle()
         refreshHolidaysIfNeeded()
         unreadCounts = UnreadBadge.fetch()
+        floatingCharacterController.updateUnread(main: unreadCounts.weChat, second: unreadCounts.weChatSecond)
         updateFloatingCharacter()
         checkPriceAlerts()
 

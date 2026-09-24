@@ -15,6 +15,17 @@ enum UnreadBadge {
         var weChatSecond: Int?
     }
 
+    static let mainBundleID = "com.tencent.xinWeChat"
+    static let secondBundleID = "com.tencent.xinWeChatSecond"
+
+    /// 打开对应的微信（把它的窗口带到前面）
+    @MainActor
+    static func activate(bundleID: String) {
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleID).first else { return }
+        app.activate(options: [.activateAllWindows])
+    }
+
     /// AX title → 未读数。纯函数，便于单测。
     static func count(fromStatusTitle title: String?) -> Int? {
         guard let title else { return nil }
@@ -75,6 +86,12 @@ final class UnreadCountBadgeView: NSView {
     static let diameter: CGFloat = 22
 
     private let label = NSTextField(labelWithString: "")
+    /// 点徽标时执行（用来打开对应的微信）
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
@@ -93,19 +110,19 @@ final class UnreadCountBadgeView: NSView {
             widthAnchor.constraint(equalToConstant: Self.diameter),
             heightAnchor.constraint(equalToConstant: Self.diameter),
         ])
-        isHidden = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// nil / 0 → 隐藏；超过 99 显示 99+
+    /// 有未读：红底 + 数字（超过 99 显示 99+）；没有未读：**仍然显示**一颗灰圈（可点击打开微信）
     func update(count: Int?) {
         guard let count, count > 0 else {
-            isHidden = true
+            label.stringValue = ""
+            layer?.backgroundColor = NSColor(white: 0.45, alpha: 0.55).cgColor
             return
         }
         label.stringValue = count > 99 ? "99+" : "\(count)"
-        isHidden = false
+        layer?.backgroundColor = NSColor(calibratedRed: 0.92, green: 0.22, blue: 0.2, alpha: 1).cgColor
     }
 }

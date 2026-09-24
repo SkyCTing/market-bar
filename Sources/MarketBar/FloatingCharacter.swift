@@ -572,6 +572,15 @@ final class FloatingCharacterController: NSObject {
     /// 右键人物（参数是屏幕坐标下的 frame）。控制器只负责转发，不认识 AppDelegate 或聊天。
     var onRightClick: ((NSRect) -> Void)?
 
+    /// 人物右上角的未读徽标：左＝主微信、右＝微信小号；点一下打开对应聊天框
+    private let mainBadge = UnreadCountBadgeView()
+    private let secondBadge = UnreadCountBadgeView()
+
+    func updateUnread(main: Int?, second: Int?) {
+        mainBadge.update(count: main)
+        secondBadge.update(count: second)
+    }
+
     nonisolated(unsafe) private var actionTimer: Timer?
     nonisolated(unsafe) private var ambientActionTimer: Timer?
     nonisolated(unsafe) private var dockedBlinkScheduleTimer: Timer?
@@ -624,6 +633,20 @@ final class FloatingCharacterController: NSObject {
         characterView.onRightClick = { [weak self] anchor in
             self?.onRightClick?(anchor)
         }
+
+        // 两颗徽标贴在人物右上角（左＝主微信、右＝微信小号），点击打开对应微信
+        mainBadge.onClick = { UnreadBadge.activate(bundleID: UnreadBadge.mainBundleID) }
+        secondBadge.onClick = { UnreadBadge.activate(bundleID: UnreadBadge.secondBundleID) }
+        for badge in [mainBadge, secondBadge] {
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            characterView.addSubview(badge)
+        }
+        NSLayoutConstraint.activate([
+            secondBadge.trailingAnchor.constraint(equalTo: characterView.trailingAnchor, constant: -6),
+            secondBadge.topAnchor.constraint(equalTo: characterView.topAnchor, constant: 6),
+            mainBadge.trailingAnchor.constraint(equalTo: secondBadge.leadingAnchor, constant: -4),
+            mainBadge.topAnchor.constraint(equalTo: secondBadge.topAnchor),
+        ])
         characterView.onDragBegan = { [weak self] in
             self?.beginDragInteraction()
         }
