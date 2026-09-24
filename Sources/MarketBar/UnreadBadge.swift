@@ -26,9 +26,14 @@ enum UnreadBadge {
     /// - 微信没在运行时，原来的实现是**静默什么都不做**，这里补上启动。
     @MainActor
     static func activate(bundleID: String) {
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
-           app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) {
-            return
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            // 微信窗口可能是「隐藏」状态：隐藏的 app 只 activate 不会把窗口带出来，必须先 unhide
+            if app.isHidden {
+                app.unhide()
+            }
+            if app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps]) {
+                return
+            }
         }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
         let configuration = NSWorkspace.OpenConfiguration()
