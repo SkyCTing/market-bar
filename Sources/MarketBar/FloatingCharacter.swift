@@ -641,11 +641,24 @@ final class FloatingCharacterController: NSObject {
             badge.translatesAutoresizingMaskIntoConstraints = false
             characterView.addSubview(badge)
         }
+        // 位置：头的左右两侧（按视图宽高的比例定位，换尺寸档位时不会跑偏）
         NSLayoutConstraint.activate([
-            secondBadge.trailingAnchor.constraint(equalTo: characterView.trailingAnchor, constant: -6),
-            secondBadge.topAnchor.constraint(equalTo: characterView.topAnchor, constant: 6),
-            mainBadge.trailingAnchor.constraint(equalTo: secondBadge.leadingAnchor, constant: -4),
-            mainBadge.topAnchor.constraint(equalTo: secondBadge.topAnchor),
+            NSLayoutConstraint(
+                item: mainBadge, attribute: .centerX, relatedBy: .equal,
+                toItem: characterView, attribute: .trailing, multiplier: 0.30, constant: 0
+            ),
+            NSLayoutConstraint(
+                item: secondBadge, attribute: .centerX, relatedBy: .equal,
+                toItem: characterView, attribute: .trailing, multiplier: 0.70, constant: 0
+            ),
+            NSLayoutConstraint(
+                item: mainBadge, attribute: .centerY, relatedBy: .equal,
+                toItem: characterView, attribute: .bottom, multiplier: 0.76, constant: 0
+            ),
+            NSLayoutConstraint(
+                item: secondBadge, attribute: .centerY, relatedBy: .equal,
+                toItem: characterView, attribute: .bottom, multiplier: 0.76, constant: 0
+            ),
         ])
         characterView.onDragBegan = { [weak self] in
             self?.beginDragInteraction()
