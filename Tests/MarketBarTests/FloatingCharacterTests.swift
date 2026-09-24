@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import goldPriceBar
+@testable import MarketBar
 
 final class FloatingCharacterTests: XCTestCase {
     func testEmotionUsesSadOnlyForNegativePrices() {
@@ -28,13 +28,29 @@ final class FloatingCharacterTests: XCTestCase {
     func testFloatingCharacterSizeOptionsUseRequestedDefaults() {
         let size = FloatingCharacterController.defaultSize
         XCTAssertEqual(size, NSSize(width: 240, height: 240))
-        XCTAssertEqual(FloatingCharacterSizeOption.small.size, NSSize(width: 220, height: 220))
+        XCTAssertEqual(FloatingCharacterSizeOption.allCases.count, 5)
+        XCTAssertEqual(FloatingCharacterSizeOption.mini.size, NSSize(width: 160, height: 160))
+        XCTAssertEqual(FloatingCharacterSizeOption.small.size, NSSize(width: 200, height: 200))
         XCTAssertEqual(FloatingCharacterSizeOption.standard.size, NSSize(width: 240, height: 240))
-        XCTAssertEqual(FloatingCharacterSizeOption.large.size, NSSize(width: 260, height: 260))
+        XCTAssertEqual(FloatingCharacterSizeOption.large.size, NSSize(width: 280, height: 280))
+        XCTAssertEqual(FloatingCharacterSizeOption.huge.size, NSSize(width: 320, height: 320))
         XCTAssertEqual(FloatingCharacterSizeOption.defaultOption, .standard)
-        XCTAssertEqual(FloatingCharacterSizeOption.small.dockedSize, NSSize(width: 165, height: 103))
-        XCTAssertEqual(FloatingCharacterSizeOption.standard.dockedSize, NSSize(width: 180, height: 112))
-        XCTAssertEqual(FloatingCharacterSizeOption.large.dockedSize, NSSize(width: 195, height: 122))
+
+        // 贴边尺寸按固定比例缩放，保证各档位观感一致
+        for option in FloatingCharacterSizeOption.allCases {
+            XCTAssertEqual(option.dockedSize.width, (option.rawValue * 0.75).rounded())
+            XCTAssertEqual(option.dockedSize.height, (option.rawValue * 0.4667).rounded())
+            XCTAssertLessThan(option.dockedSize.width, option.size.width)
+        }
+    }
+
+    /// 老版本存过 220 / 260 这类已下架的档位，不能悄悄回到默认，要还原成最接近的
+    func testPersistedLegacySizeFallsBackToNearestOption() {
+        XCTAssertEqual(FloatingCharacterSizeOption.option(forPersistedValue: 220), .small)
+        XCTAssertEqual(FloatingCharacterSizeOption.option(forPersistedValue: 260), .standard)
+        XCTAssertEqual(FloatingCharacterSizeOption.option(forPersistedValue: 240), .standard)
+        XCTAssertEqual(FloatingCharacterSizeOption.option(forPersistedValue: 999), .huge)
+        XCTAssertEqual(FloatingCharacterSizeOption.option(forPersistedValue: 1), .mini)
     }
 
     @MainActor
@@ -454,12 +470,6 @@ final class FloatingCharacterTests: XCTestCase {
         )
     }
 
-    func testPriceTrendMatchesStatusBarSemantics() {
-        XCTAssertEqual(FloatingCharacterPriceTrend(isNegative: false), .up)
-        XCTAssertEqual(FloatingCharacterPriceTrend(isNegative: true), .down)
-        XCTAssertEqual(FloatingCharacterPriceTrend(isNegative: nil), .flat)
-    }
-
     func testMotionPolicyPausesForIdleLowPowerAndInactiveSessions() {
         XCTAssertTrue(FloatingCharacterMotionPolicy.allowsAmbientMotion(
             isVisible: true,
@@ -529,7 +539,7 @@ final class FloatingCharacterTests: XCTestCase {
                 let availableSize = FloatingCharacterView.signRect(
                     in: bounds,
                     normalized: pose.normalizedSignRect
-                ).insetBy(dx: 5, dy: 4).size
+                ).insetBy(dx: FloatingCharacterView.signTextInset.width, dy: FloatingCharacterView.signTextInset.height).size
                 for value in ["0.00", "999.99", "1049.59", "99999999.99"] {
                     let size = FloatingCharacterView.fittedFontSize(for: value, in: availableSize)
                     let font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)
@@ -554,7 +564,7 @@ final class FloatingCharacterTests: XCTestCase {
                 let availableSize = FloatingCharacterView.signRect(
                     in: bounds,
                     normalized: normalizedRect
-                ).insetBy(dx: 5, dy: 4).size
+                ).insetBy(dx: FloatingCharacterView.signTextInset.width, dy: FloatingCharacterView.signTextInset.height).size
                 for value in ["0.00", "1049.59", "99999999.99"] {
                     let size = FloatingCharacterView.fittedFontSize(for: value, in: availableSize)
                     let font = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)
@@ -564,6 +574,137 @@ final class FloatingCharacterTests: XCTestCase {
                 }
             }
         }
+    }
+
+    // MARK: - 举牌两行排版（金价 + 组合当日盈亏）
+
+    /// 所有姿态 × 尺寸下，两行可用区都要在牌子内、都是正的、且上下不重叠
+    @MainActor
+    func testTwoLineLayoutStaysInsideEverySignRect() {
+        for option in FloatingCharacterSizeOption.allCases {
+            let bounds = NSRect(origin: .zero, size: option.size)
+            for pose in FloatingCharacterPose.allCases {
+                assertTwoLineLayout(
+                    signRect: FloatingCharacterView.signRect(in: bounds, normalized: pose.normalizedSignRect)
+                        .insetBy(dx: FloatingCharacterView.signTextInset.width, dy: FloatingCharacterView.signTextInset.height)
+                )
+            }
+        }
+
+        let right = FloatingCharacterView.dockedRightSignRect
+        for option in FloatingCharacterSizeOption.allCases {
+            let bounds = NSRect(origin: .zero, size: option.dockedSize)
+            for normalizedRect in [
+                right,
+                NSRect(x: 1 - right.maxX, y: right.minY, width: right.width, height: right.height),
+            ] {
+                assertTwoLineLayout(
+                    signRect: FloatingCharacterView.signRect(in: bounds, normalized: normalizedRect)
+                        .insetBy(dx: FloatingCharacterView.signTextInset.width, dy: FloatingCharacterView.signTextInset.height)
+                )
+            }
+        }
+    }
+
+    private func assertTwoLineLayout(signRect: NSRect, file: StaticString = #filePath, line: UInt = #line) {
+        let available = FloatingCharacterSignLayout.availableSizes(in: signRect, hasProfit: true)
+        guard let profit = available.profit else {
+            return XCTFail("有第二行时必须给出盈亏可用区", file: file, line: line)
+        }
+
+        XCTAssertGreaterThan(available.price.width, 0, file: file, line: line)
+        XCTAssertGreaterThan(available.price.height, 0, file: file, line: line)
+        XCTAssertGreaterThan(profit.height, 0, file: file, line: line)
+        XCTAssertLessThanOrEqual(available.price.height + profit.height, signRect.height, file: file, line: line)
+
+        // 两行各自适配出来的实际绘制区不能互相压到
+        let origins = FloatingCharacterSignLayout.drawOrigins(
+            priceSize: available.price,
+            profitSize: profit,
+            in: signRect
+        )
+        guard let profitOrigin = origins.profit else {
+            return XCTFail("有第二行时必须给出绘制原点", file: file, line: line)
+        }
+        // y 轴向上：金价那行的下沿要在盈亏那行的上沿之上（中间正好隔一个 gap）
+        XCTAssertGreaterThanOrEqual(
+            origins.price.y,
+            profitOrigin.y + profit.height - 0.001,
+            "盈亏那行不能压到金价那行",
+            file: file, line: line
+        )
+        XCTAssertGreaterThanOrEqual(origins.price.y, signRect.minY - 0.001, file: file, line: line)
+        XCTAssertLessThanOrEqual(profitOrigin.y, signRect.maxY + 0.001, file: file, line: line)
+    }
+
+    /// 两行的字号都要放得进各自那一半，且**盈亏必须比金价大**
+    @MainActor
+    func testTwoLineFontsFitTheirHalvesAndProfitDominates() {
+        let bounds = NSRect(origin: .zero, size: FloatingCharacterSizeOption.standard.size)
+        for pose in FloatingCharacterPose.allCases {
+            let signRect = FloatingCharacterView.signRect(in: bounds, normalized: pose.normalizedSignRect)
+                .insetBy(dx: FloatingCharacterView.signTextInset.width, dy: FloatingCharacterView.signTextInset.height)
+            let available = FloatingCharacterSignLayout.availableSizes(in: signRect, hasProfit: true)
+            let profitAvailable = available.profit!
+
+            for price in ["0.00", "1049.59", "99999999.99"] {
+                for profit in ["-8,055", "+1,100", "-1,234,567"] {
+                    let profitSize = FloatingCharacterView.fittedFontSize(for: profit, in: profitAvailable)
+                    let priceSize = min(
+                        FloatingCharacterView.fittedFontSize(for: price, in: available.price),
+                        profitSize * FloatingCharacterSignLayout.priceFontScale
+                    )
+
+                    for (text, size, box) in [(price, priceSize, available.price), (profit, profitSize, profitAvailable)] {
+                        let measured = (text as NSString).size(
+                            withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)]
+                        )
+                        XCTAssertLessThanOrEqual(measured.width, box.width + 1, text)
+                        XCTAssertLessThanOrEqual(measured.height, box.height + 1, text)
+                    }
+                    XCTAssertGreaterThanOrEqual(priceSize, 1)
+                    XCTAssertGreaterThan(
+                        profitSize,
+                        priceSize,
+                        "盈亏那行必须比金价大（\(profit) vs \(price)）"
+                    )
+                }
+            }
+        }
+    }
+
+    /// 没有盈亏时必须是改动前的单行行为（同一个可用区、同一个居中公式）
+    func testSingleLineLayoutIsTheOldCentering() {
+        let signRect = NSRect(x: 20, y: 30, width: 90, height: 28)
+
+        let available = FloatingCharacterSignLayout.availableSizes(in: signRect, hasProfit: false)
+        XCTAssertEqual(available.price, signRect.size)
+        XCTAssertNil(available.profit)
+
+        let textSize = NSSize(width: 40, height: 14)
+        let origins = FloatingCharacterSignLayout.drawOrigins(priceSize: textSize, profitSize: nil, in: signRect)
+        XCTAssertNil(origins.profit)
+        XCTAssertEqual(origins.price.x, signRect.midX - textSize.width / 2)
+        XCTAssertEqual(origins.price.y, signRect.midY - textSize.height / 2)
+    }
+
+    /// 盈亏那行分到的高度要更多（它是主角），两行加间隙正好填满牌子
+    func testProfitLineGetsMoreHeightThanThePriceLine() {
+        let signRect = NSRect(x: 0, y: 0, width: 84.8, height: 26.8)   // 标准尺寸下最紧的姿态之一
+        let available = FloatingCharacterSignLayout.availableSizes(in: signRect, hasProfit: true)
+
+        XCTAssertGreaterThan(available.profit!.height, available.price.height)
+        XCTAssertEqual(
+            available.price.height + available.profit!.height + FloatingCharacterSignLayout.gap(in: signRect),
+            signRect.height,
+            accuracy: 0.001
+        )
+    }
+
+    func testSignLayoutTreatsEmptyProfitTextAsNoSecondLine() {
+        XCTAssertNil(FloatingCharacterSignLayout.normalizedProfitText(nil))
+        XCTAssertNil(FloatingCharacterSignLayout.normalizedProfitText(""))
+        XCTAssertEqual(FloatingCharacterSignLayout.normalizedProfitText("-8,055"), "-8,055")
     }
 
     @MainActor

@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_NAME="GoldPriceBar"
-BUNDLE_ID="com.goldpricebar.app"
+APP_NAME="MarketBar"
+BUNDLE_ID="com.marketbar.app"
 VERSION="1.0.3"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/.build"
@@ -14,7 +14,7 @@ echo "🔨 Building release binary..."
 cd "${PROJECT_DIR}"
 swift build -c release 2>&1
 
-BINARY_PATH="${BUILD_DIR}/release/goldPriceBar"
+BINARY_PATH="${BUILD_DIR}/release/MarketBar"
 if [ ! -f "${BINARY_PATH}" ]; then
     echo "❌ Binary not found at ${BINARY_PATH}"
     exit 1
@@ -43,7 +43,7 @@ fi
 
 # Copy floating character sprites. The app loads these from Bundle.main when
 # running inside the packaged .app bundle.
-CHARACTER_RESOURCES="${PROJECT_DIR}/Sources/goldPriceBar/Resources/FloatingCharacter"
+CHARACTER_RESOURCES="${PROJECT_DIR}/Sources/MarketBar/Resources/FloatingCharacter"
 if [ -d "${CHARACTER_RESOURCES}" ]; then
     cp -R "${CHARACTER_RESOURCES}" "${APP_BUNDLE}/Contents/Resources/"
     echo "✅ Floating character resources copied"
@@ -61,7 +61,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << EOF
     <key>CFBundleName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleDisplayName</key>
-    <string>Gold Price Bar</string>
+    <string>Market Bar</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleVersion</key>

@@ -1,6 +1,6 @@
-# GoldPriceBar
+# MarketBar
 
-macOS 状态栏与 Windows 任务栏黄金积存金实时价格监控应用。
+macOS 状态栏行情监控应用：黄金积存金价格 + 自选股票/ETF 行情 + 持仓当日盈亏。
 
 积存金数据来源于京东金额。https://gold-price-pro.pf.jd.com/
 
@@ -8,8 +8,27 @@ macOS 状态栏与 Windows 任务栏黄金积存金实时价格监控应用。
 
 ### 实时金价显示
 
-- 启动后在状态栏显示当前黄金价格，默认展示 `浙商积存金 xx.xx`
+- 启动后在状态栏只显示当前黄金价格，例如 `1049.59`，不显示数据源名称与涨跌幅
 - 接口取值失败时显示 `0.00`
+
+### 悬浮行情面板（macOS）
+
+- 鼠标悬停在状态栏价格上时弹出面板，移开即消失；面板内依次是金价、`行情数据`、`自选行情`、`信息` 四段
+- `行情数据` 段：伦敦金、黄金T+D、伦敦金换算 (¥/g)、溢价 (¥/g)、离岸人民币、美元指数
+- `自选行情` 段：上证指数、4 只 ETF 与 11 只个股，四列 —— `名称+量能`、`股数`、`现价+涨跌幅`、`当日盈亏`；取自腾讯 `qt.gtimg.cn`（一条请求批量拉全部），跟随刷新频率一起更新；红涨绿跌
+- 持仓股数写死在 `StockHoldings`；当日盈亏 = 今日涨跌额 × 股数（整数元 + 千分位，带正负号）；没有持仓的标的（上证指数）股数与盈亏两列留空
+- 每只标的后面带**量能倍数**：按交易时段进度把今日累计量折算成预估全天量，再除以昨日全天量。≥1.2 标「放量」（红）、≤0.8 标「缩量」（绿）、其余只显示倍数；开盘 15 分钟内样本太少，显示 `--`
+- 昨日全天量取自腾讯日线接口，每个交易日只拉一次（昨日量当天是常量）；节假日与周末显示上一交易日的收盘量能
+- 标的写死在 `StockWatchlist`（`Sources/MarketBar/MarketBar.swift`），增删改这个数组即可；停牌或取数失败显示 `--`
+
+### AI 聊天（右键人物）
+
+- **右键**（触控板两指点按）桌面浮动人物 → 弹出聊天窗；左键的单击/双击/连击动作完全不受影响，Esc 关闭
+- 聊天调用的是**你自己的 `claude` CLI**（带你的工具、MCP、记忆和默认模型），并且**复用同一个会话**：关掉窗口、重启 app 之后接着聊，用 `cd ~ && claude --resume <会话 id>` 也能看到同一段对话
+- 会话 id、claude 路径、工作目录存在 `UserDefaults`；工作目录默认 `$HOME`（会话落在 `~/.claude/projects/-Users-sky-ding/`）
+- 每条回复后面显示本次成本（完整 CLI 每次约 $0.02–0.05）；等待时按钮变「停止」，超时 300 秒
+- 依赖 `claude` 命令：找不到时窗口里会出现「选择 claude 路径…」按钮手动指定
+- ⚠️ 与「在终端里跑 claude」不完全等价：`-p` 是非交互模式，**需要授权确认的工具会被直接拒绝**，不会弹窗问你
 
 ### 数据源切换
 
@@ -30,22 +49,16 @@ macOS 状态栏与 Windows 任务栏黄金积存金实时价格监控应用。
 
 ### 设置持久化
 
-- macOS 使用 `UserDefaults`，Windows 使用 `%LocalAppData%/GoldPriceBar/settings.json`
+- 使用 `UserDefaults` 保存设置
 - 数据源、刷新频率、高低价提醒及浮动人物状态都会持久化
 - 退出重启后自动恢复上次设置
-
-### Windows 常驻价格条
-
-- Windows 通知区域保留应用图标，并在主任务栏通知区域旁始终显示原生紧凑价格条
-- 价格条显示数据源、金价及涨跌幅，悬停或左键打开行情详情，右键打开完整设置菜单
-- 按住价格条左键可跨屏拖动；靠近屏幕边缘时自动吸附，并始终限制在任务栏以外的可见工作区内
-- 拖动位置仅在本次运行期间保留，重启后恢复到主任务栏附近；显示器或 DPI 变化时会自动修正当前位置
 
 ### 桌面浮动人物
 
 - 默认在桌面右下角显示 `240×240` 的可拖动透明人物，可在“浮动窗口”菜单选择 `220/240/260` 三档尺寸
 - 金价下跌显示悲伤姿态，上涨、持平或暂无数据时显示开心姿态
-- 人物举牌中的价格与状态栏实时同步，上涨显示红色、下跌显示绿色，并会根据数字长度自动缩放
+- 人物举牌中的价格与状态栏实时同步，使用固定中性墨色、不随涨跌变色，并会根据数字长度自动缩放
+- 举牌第二行显示**持仓当日盈亏合计**（如 `-8,055`），同样不着色、只带正负号；没有可统计的持仓或行情缺失时退回单行
 - 人物会持续进行较明显但柔和的呼吸、上下漂浮和轻微摇摆，每 10–15 秒自动切换动作并停留 3 秒；点击时会从当前情绪的 8 个动作中随机选择
 - 开心动作包含摆手、眨眼、庆祝、爱心、困倦、鼓掌、跳舞和点赞；难过动作包含撅嘴、躲藏、跺脚、流泪、转身、叹气、捂脸和发抖
 - 人物会在点击、快速涨跌、入睡和唤醒时显示中文气泡，并每 45–90 秒随机说一句与当前心情匹配的话；气泡复用单一窗口，不持续创建额外视图
@@ -60,33 +73,33 @@ macOS 状态栏与 Windows 任务栏黄金积存金实时价格监控应用。
 
 ## 系统要求
 
-- macOS：macOS 13.0 (Ventura) 及以上、Swift 6.2+
-- Windows：Windows 10 22H2 / Windows 11 x64；便携包已自包含 .NET 10，无需单独安装运行时
+- macOS 13.0 (Ventura) 及以上、Swift 6.2+
 
 ## 代码结构
 
 ```
-goldPriceBar/
+market-bar/
 ├── Package.swift                              # Swift Package 工程定义
 ├── AppIcon.icns                               # 应用图标
-├── Sources/goldPriceBar/
-│   ├── goldPriceBar.swift                     # 应用主实现
+├── Sources/MarketBar/
+│   ├── MarketBar.swift                        # 应用主实现
+│   ├── StockVolume.swift                      # 交易时段进度、量能判定与面板配色
+│   ├── StockHoldings.swift                    # 持仓股数、当日盈亏与金额格式化
+│   ├── FloatingCharacterSignLayout.swift      # 举牌两行排版（纯几何）
 │   ├── FloatingCharacter.swift                # 浮动人物窗口与交互
+│   ├── ClaudeChat.swift                       # 调用 claude CLI 的纯逻辑与子进程管道
+│   ├── ClaudeChatPanel.swift                  # 聊天窗口与转写区
+│   ├── ClaudeChatController.swift             # 聊天窗 + 会话状态 + 在途请求
 │   └── Resources/FloatingCharacter/           # 人物姿态图片
 ├── Artwork/FloatingCharacterSources/          # 浮动人物高清源素材
 ├── Artwork/FloatingCharacterActionSources/    # 新增动作的绿幕源图与透明母版
 ├── Artwork/FloatingCharacterDockedSources/    # 贴边人物生成源图与透明母版
-├── Tests/goldPriceBarTests/                   # 浮动人物逻辑测试
-├── Windows/
-│   ├── GoldPriceBar.Core/                     # 跨 UI 的接口、解析、设置与行为策略
-│   ├── GoldPriceBar.Windows/                  # .NET 10 WPF Windows 客户端
-│   └── GoldPriceBar.Core.Tests/               # Windows 核心逻辑测试
+├── Tests/MarketBarTests/                      # 浮动人物、行情解析、量能与持仓测试
 ├── scripts/
-│   ├── build-dmg.sh                           # DMG 打包脚本
-│   └── build-windows.ps1                      # Windows 便携包脚本
+│   └── build-dmg.sh                           # DMG 打包脚本
 └── dist/                                      # 打包产出目录
-    ├── GoldPriceBar.app                       # macOS 应用包
-    └── GoldPriceBar-1.0.2.dmg                 # DMG 安装包
+    ├── MarketBar.app                          # macOS 应用包
+    └── MarketBar-1.0.2.dmg                    # DMG 安装包
 ```
 
 ## macOS 运行方式
@@ -94,14 +107,14 @@ goldPriceBar/
 ### 方式一：Xcode 运行
 
 1. 使用 Xcode 打开项目目录中的 `Package.swift`
-2. 选择 `goldPriceBar` 可执行目标
+2. 选择 `MarketBar` 可执行目标
 3. 直接运行
 
 ### 方式二：命令行运行
 
 ```bash
 swift build
-.build/debug/goldPriceBar
+.build/debug/MarketBar
 ```
 
 ## 打包发布
@@ -114,33 +127,16 @@ bash scripts/build-dmg.sh
 
 产出文件位于 `dist/` 目录：
 
-- `GoldPriceBar.app` — macOS 应用包
-- `GoldPriceBar-1.0.2.dmg` — DMG 安装包（含 Applications 快捷方式，可拖拽安装）
-
-## Windows 开发与发布
-
-在 Windows 10/11 安装 .NET 10 SDK 后运行：
-
-```powershell
-dotnet run --project Windows/GoldPriceBar.Windows/GoldPriceBar.Windows.csproj
-```
-
-执行测试并生成无需安装的 x64 便携 ZIP：
-
-```powershell
-./scripts/build-windows.ps1
-```
-
-产出文件为 `dist/GoldPriceBar-Windows-x64-1.0.3.zip`。GitHub Actions 中的 `Windows Build` 工作流也会自动测试并上传该产物。
+- `MarketBar.app` — macOS 应用包
+- `MarketBar-1.0.2.dmg` — DMG 安装包（含 Applications 快捷方式，可拖拽安装）
 
 ## 技术实现
 
 | 模块 | 技术方案 |
 |------|----------|
-| macOS UI | AppKit（NSStatusBar + NSMenu） |
-| Windows UI | .NET 10 WPF + NotifyIcon |
-| 网络请求 | URLSession / HttpClient + async/await |
-| 数据解析 | JSONDecoder / System.Text.Json |
-| 通知提醒 | 双端自定义悬浮 Toast 窗口 |
-| 数据持久化 | UserDefaults / JSON 原子写入 |
-| 并发安全 | Swift Strict Concurrency / WPF Dispatcher |
+| UI | AppKit（NSStatusBar + NSMenu） |
+| 网络请求 | URLSession + async/await |
+| 数据解析 | JSONDecoder / 腾讯行情文本行解析 |
+| 通知提醒 | 自定义悬浮 Toast 窗口 |
+| 数据持久化 | UserDefaults |
+| 并发安全 | Swift Strict Concurrency |

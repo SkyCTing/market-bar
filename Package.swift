@@ -4,20 +4,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "goldPriceBar",
+    name: "MarketBar",
     platforms: [
         .macOS(.v13),
     ],
     targets: [
         .executableTarget(
-            name: "goldPriceBar",
+            name: "MarketBar",
             resources: [
                 .process("Resources"),
             ]
         ),
         .testTarget(
-            name: "goldPriceBarTests",
-            dependencies: ["goldPriceBar"]
+            name: "MarketBarTests",
+            dependencies: ["MarketBar"]
         ),
     ]
 )

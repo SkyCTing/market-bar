@@ -124,6 +124,73 @@ struct MarketData {
     )
 }
 
+// MARK: - 自选清单
+
+/// 悬浮面板「自选行情」分区写死的标的，改这个数组即可增删。
+enum StockWatchlist {
+    struct Entry: Sendable {
+        let code: String   // 腾讯行情代码，如 "sh512170"，同时用作面板行的字典 key
+        let name: String   // 显示名写死：腾讯返回的名称是 GBK 中文，不解析它
+    }
+
+    static let entries: [Entry] = [
+        Entry(code: "sh000001", name: "上证指数"),
+        Entry(code: "sh512170", name: "医疗ETF华宝"),
+        Entry(code: "sz159813", name: "半导体ETF鹏华"),
+        // 名称太长会挤掉右侧数值列（面板宽 300pt），所以省掉基金公司后缀
+        Entry(code: "sh513130", name: "恒生科技ETF"),
+        Entry(code: "sz159567", name: "港股创新药ETF"),
+        Entry(code: "sz300657", name: "弘信电子"),
+        Entry(code: "sz300375", name: "鹏翎股份"),
+        Entry(code: "sh600036", name: "招商银行"),
+        Entry(code: "sz000564", name: "供销大集"),
+        Entry(code: "sz300803", name: "指南针"),
+        Entry(code: "sz300468", name: "四方精创"),
+        Entry(code: "sz002657", name: "中科金财"),
+        Entry(code: "sz300339", name: "润和软件"),
+        Entry(code: "sh603406", name: "天富龙"),
+        Entry(code: "sz301609", name: "山大电力"),
+        Entry(code: "sz000034", name: "神州数码"),
+    ]
+
+    static var codes: [String] { entries.map(\.code) }
+
+    static let url = URL(string: "https://qt.gtimg.cn/q=" + entries.map(\.code).joined(separator: ","))!
+}
+
+/// 单只标的的行情。价格/涨跌字段与 `MarketData.QuoteRow` 一一对应，
+/// 因此面板的 `formatValueWithPercent` 与 `raisedColor` 可以直接复用。
+struct StockQuote: Sendable {
+    let code: String
+    let name: String
+    /// 已格式化价格字符串，`"--"` 表示无数据（沿用 `QuoteRow.price` 的哨兵约定）
+    let price: String
+    let raise: Double
+    /// ⚠️ 小数：0.0029 表示 0.29%
+    let raisePercent: Double
+    /// 今日累计成交量（手）
+    let volume: Double
+    /// 行情时间戳所属的交易日 `2026-09-23`；解析失败为空串
+    let sessionDate: String
+
+    static func placeholder(
+        code: String,
+        name: String,
+        volume: Double = 0,
+        sessionDate: String = ""
+    ) -> StockQuote {
+        StockQuote(
+            code: code,
+            name: name,
+            price: "--",
+            raise: 0,
+            raisePercent: 0,
+            volume: volume,
+            sessionDate: sessionDate
+        )
+    }
+}
+
 final class GoldPriceService: Sendable {
     private let session: URLSession
 
@@ -212,6 +279,168 @@ final class GoldPriceService: Sendable {
         }
     }
 
+    /// 拉取 `StockWatchlist` 里所有标的的行情。返回的字典可能缺项（接口没返回该代码、
+    /// 或该标的停牌），缺的项由调用方回落到 `StockQuote.placeholder`。
+    func fetchStockQuotes() async -> [String: StockQuote] {
+        var request = URLRequest(url: StockWatchlist.url)
+        request.timeoutInterval = 5
+
+        do {
+            let (data, _) = try await session.data(for: request)
+            return Self.parseStockQuotes(data, watchlist: StockWatchlist.entries)
+        } catch {
+            return [:]
+        }
+    }
+
+    /// 解析腾讯行情 `qt.gtimg.cn` 的响应。每行形如
+    /// `v_sh512170="1~医疗ETF华宝~512170~0.349~…~<30 时间>~<31 涨跌>~<32 涨跌幅%>~…";`
+    /// 记录之间用 `";\n"` 分隔（第二条起每段以换行开头），所以按清单里的代码
+    /// 逐个定位锚点，而不是按 `;` 切分。
+    static func parseStockQuotes(_ data: Data, watchlist: [StockWatchlist.Entry]) -> [String: StockQuote] {
+        // 响应含 GBK 编码的中文名称。ISO-8859-1 把每个字节一一映射成字符，对要读的
+        // ASCII 数字字段是无损的；换成 .utf8 会整段返回 nil，导致全部标的一直显示 "--"。
+        let text = String(data: data, encoding: .isoLatin1) ?? ""
+
+        var quotes: [String: StockQuote] = [:]
+        for entry in watchlist {
+            guard let keyRange = text.range(of: "v_\(entry.code)=\"") else { continue }
+            let rest = text[keyRange.upperBound...]
+            guard let bodyEnd = rest.firstIndex(of: "\"") else { continue }
+            let fields = rest[rest.startIndex..<bodyEnd].components(separatedBy: "~")
+
+            // 字段不足或内容错位（无效代码只会返回 v_pv_none_match="1"）时跳过
+            guard fields.count > 32, fields[2].hasSuffix(entry.code.suffix(6)) else { continue }
+
+            // 成交量和交易日要在「价格为 0 就占位」那道 guard 之前取：
+            // 否则停牌行的 sessionDate 为空，日线缓存的键就永远是空的，永远不会去拉。
+            let volume = Double(fields[6]) ?? 0
+            let sessionDate = TradingSession.sessionDate(fromQuoteTimestamp: fields[30]) ?? ""
+
+            // 停牌、未开盘或数据异常时价格是 0.000 / 空，回落到 "--" 占位
+            guard let price = Double(fields[3]), price > 0 else {
+                quotes[entry.code] = .placeholder(
+                    code: entry.code,
+                    name: entry.name,
+                    volume: volume,
+                    sessionDate: sessionDate
+                )
+                continue
+            }
+
+            quotes[entry.code] = StockQuote(
+                code: entry.code,
+                name: entry.name,
+                price: fields[3],
+                raise: Double(fields[31]) ?? 0,
+                raisePercent: (Double(fields[32]) ?? 0) / 100,  // 接口给的是百分数，面板要小数
+                volume: volume,
+                sessionDate: sessionDate
+            )
+        }
+        return quotes
+    }
+
+    /// 法定节假日（timor.tech 的年接口，含调休补班信息）。
+    /// 只用来判断「今天是不是交易日」和取节日名，拉不到就退化为只按周末判断。
+    func fetchHolidays(year: Int) async -> [String: String] {
+        guard let url = URL(string: "https://timor.tech/api/holiday/year/\(year)") else { return [:] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+
+        do {
+            let (data, _) = try await session.data(for: request)
+            return MarketCalendar.parseHolidays(data)
+        } catch {
+            return [:]
+        }
+    }
+
+    /// 日线接口。一次只能一只（多个代码用 `;` 或 `,` 拼接都会返回 param error，实测过），
+    /// 且用 kline/kline 而不是 fqkline/get：后者对部分代码返回 `day`、对另一部分返回 `qfqday`，
+    /// 键不稳定；而成交量复权与否完全一致（比对过 320 个交易日），所以取键稳定的这个。
+    private static let dailyBarsBase = "https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param="
+
+    static func dailyBarsURL(code: String, days: Int = 5) -> URL? {
+        // 代码来自写死的清单，仍然校验一次，免得手误把垃圾参数打出去
+        guard code.range(of: "^(sh|sz)[0-9]{6}$", options: .regularExpression) != nil else { return nil }
+        return URL(string: "\(dailyBarsBase)\(code),day,,,\(days)")
+    }
+
+    /// 拉一只标的最近若干根日线，用来取「昨日全天量」
+    func fetchDailyBars(code: String, days: Int = 5) async -> [StockDailyBar] {
+        guard let url = Self.dailyBarsURL(code: code, days: days) else { return [] }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+
+        do {
+            let (data, _) = try await session.data(for: request)
+            return Self.parseDailyBars(data, code: code)
+        } catch {
+            return []
+        }
+    }
+
+    /// 并发拉多只（串行最坏 16 × 5 秒）。失败的代码不进结果，调用方显示 "--"，等下次会话日变化时重试。
+    func fetchDailyBars(codes: [String], days: Int = 5) async -> [String: [StockDailyBar]] {
+        await withTaskGroup(of: (String, [StockDailyBar]).self) { group in
+            for code in codes {
+                group.addTask { (code, await self.fetchDailyBars(code: code, days: days)) }
+            }
+            var result: [String: [StockDailyBar]] = [:]
+            for await (code, bars) in group where !bars.isEmpty {
+                result[code] = bars
+            }
+            return result
+        }
+    }
+
+    static func parseDailyBars(_ data: Data, code: String) -> [StockDailyBar] {
+        guard let response = try? JSONDecoder().decode(DailyKlineResponse.self, from: data),
+              let rows = response.data?[code]?.day else { return [] }
+
+        return rows.compactMap { row in
+            guard row.count >= 6,
+                  let date = row[0].stringValue,
+                  let volumeText = row[5].stringValue,
+                  let volume = Double(volumeText) else { return nil }
+            return StockDailyBar(date: date, volume: volume)
+        }
+    }
+
+    private struct DailyKlineResponse: Decodable {
+        let data: [String: Node]?
+
+        struct Node: Decodable {
+            let day: [[JSONScalar]]?
+        }
+    }
+
+    /// 日线每根通常是 6 个字符串，但个别标的（如 sz301609、sz300803）末尾会多带一个
+    /// 对象元素 `{"nd":"2026…"}`。用宽松标量解码，否则 `[[String]]` 会整段解析失败，
+    /// 那几只标的的昨日量就永远是空的。
+    private enum JSONScalar: Decodable {
+        case text(String)
+        case other
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let value = try? container.decode(String.self) {
+                self = .text(value)
+            } else if let value = try? container.decode(Double.self) {
+                self = .text(String(value))
+            } else {
+                self = .other
+            }
+        }
+
+        var stringValue: String? {
+            if case .text(let value) = self { return value }
+            return nil
+        }
+    }
+
     private func decodeZheShang(from data: Data) throws -> PriceInfo {
         let response = try JSONDecoder().decode(ZheShangResponse.self, from: data)
         let node = response.resultData?.data
@@ -268,11 +497,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var currentPrice: Double = 0
     private var currentPriceInfo: PriceInfo = .empty
     private var currentMarketData: MarketData = .empty
+    private var currentStockQuotes: [String: StockQuote] = [:]
+    /// 各标的最近的日线，用来取「昨日全天量」。一个交易日内是常量，所以按会话日缓存。
+    private var dailyBars: [String: [StockDailyBar]] = [:]
+    private var dailyBarsSessionKey = ""
+    private var isLoadingDailyBars = false
+    private var nextDailyBarsRetry = Date.distantPast
     private var isFetching = false
     private var lastUpdateTime: Date?
 
     // Hover panel
     private var hoverPanel: HoverPanel?
+    /// 右键人物弹出的 AI 聊天窗（懒创建）
+    private var chatController: ClaudeChatController?
+    /// 法定节假日（"2026-10-01" → "国庆节"），每天刷新一次，落在本地
+    private var holidays: [String: String] = [:]
+    private var holidayFetchDate: Date?
 
     // Price alert state
     private var highPriceThreshold: Double?  // alert when price >= this
@@ -299,9 +539,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             isNegative: currentPriceInfo.isNegative
         )
         floatingCharacterController.setVisible(isFloatingCharacterVisible)
+        floatingCharacterController.onRightClick = { [weak self] anchor in
+            self?.showChat(anchor: anchor)
+        }
+        refreshHolidaysIfNeeded()
         Task {
             await self.refreshPrice()
         }
+    }
+
+    /// 右键人物 → 打开/收起聊天窗（懒创建，和 hoverPanel 一个套路）
+    private func showChat(anchor: NSRect) {
+        let controller = chatController ?? ClaudeChatController()
+        chatController = controller
+        controller.toggle(anchor: anchor)
+    }
+
+    /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
+    func applicationWillTerminate(_ notification: Notification) {
+        chatController?.shutdown()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -335,61 +591,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isFetching = true
         defer { isFetching = false }
 
+        // 三个请求并发发起：各自 5 秒超时，串行的话最坏要 15 秒，
+        // 而 isFetching 会把这段时间的刷新全部丢掉。
         async let priceTask = service.fetchPriceInfo(for: selectedProvider)
+        async let marketTask = service.fetchMarketData(currentGoldPrice: currentPrice)
+        async let stockTask = service.fetchStockQuotes()
+
         let info = await priceTask
         currentPriceInfo = info
         currentPrice = info.price
         lastUpdateTime = Date()
         updateStatusTitle()
-        floatingCharacterController.update(
-            price: format(price: currentPrice),
-            numericPrice: currentPrice,
-            isNegative: info.isNegative
-        )
+        refreshHolidaysIfNeeded()
+        updateFloatingCharacter()
         checkPriceAlerts()
 
-        // Fetch market data in background and update hover panel if visible
-        let marketData = await service.fetchMarketData(currentGoldPrice: currentPrice)
-        currentMarketData = marketData
+        currentMarketData = await marketTask
+        currentStockQuotes = await stockTask
+        // 纯计算，无 await：不影响金价与状态栏的关键路径
+        floatingCharacterController.updateProfitLoss(
+            marketClosedGreeting()?.greeting ?? totalProfitLossText()
+        )
+        scheduleDailyBarsLoadIfNeeded()
         if hoverPanel?.isVisible == true {
             updateHoverPanelContent()
+        }
+    }
+
+    /// 昨日成交量在一个交易日内是常量，所以每个「行情会话日」只拉一次日线。
+    ///
+    /// 这里只起 Task 不 await：`refreshPrice` 全程持着 `isFetching`，
+    /// 一旦 await 就会把 1 秒一跳卡住（最坏 5 秒），那段时间的价格刷新会被全部丢掉。
+    private func scheduleDailyBarsLoadIfNeeded() {
+        let key = currentStockQuotes.values.map(\.sessionDate).max() ?? ""
+        guard !key.isEmpty else { return }
+
+        // 换会话日（下一个交易日）时整批重来
+        if key != dailyBarsSessionKey {
+            dailyBars = [:]
+            dailyBarsSessionKey = key
+        }
+
+        // 只补还缺的：并发请求偶尔会丢一两个，整批判定「成功」会让缺的那几只一整天都是 "--"
+        let missing = StockWatchlist.codes.filter { dailyBars[$0] == nil }
+        guard !missing.isEmpty, !isLoadingDailyBars, Date() >= nextDailyBarsRetry else { return }
+
+        isLoadingDailyBars = true
+        Task { [weak self] in
+            guard let self else { return }
+            let fetched = await self.service.fetchDailyBars(codes: missing)
+            self.isLoadingDailyBars = false
+
+            // 拉取期间可能已经跨了会话日，那一批数据就作废，等下一轮按新键重来
+            guard key == self.dailyBarsSessionKey else { return }
+            self.dailyBars.merge(fetched) { _, new in new }
+
+            // 退避是为了避免条件的每秒检查变成重试风暴；只缺少数几只时不用等太久
+            if fetched.count < missing.count {
+                self.nextDailyBarsRetry = Date().addingTimeInterval(fetched.isEmpty ? 60 : 15)
+            } else {
+                self.nextDailyBarsRetry = .distantPast
+            }
+
+            if self.hoverPanel?.isVisible == true {
+                self.updateHoverPanelContent()
+            }
         }
     }
 
     private func updateStatusTitle() {
         guard let button = statusItem.button else { return }
 
-        let info = currentPriceInfo
-        let priceStr = format(price: currentPrice)
-
-        // e.g. "浙商 1049.59"
-        let prefix = "\(selectedProvider.shortName) \(priceStr) "
-        // e.g. "(-4.08 -0.38%)"
-        let changePart = "(\(info.changeAmount) \(info.changePercent))"
-
-        let fullStr = prefix + changePart
-        let attributed = NSMutableAttributedString(string: fullStr)
-
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-
-        // Style entire string with default color
-        attributed.addAttributes([
-            .font: font,
-            .foregroundColor: NSColor.labelColor,
-        ], range: NSRange(location: 0, length: fullStr.count))
-
-        // Color the change part
-        let changeColor: NSColor
-        if let isNeg = info.isNegative {
-            changeColor = isNeg
-                ? NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1)  // green
-                : NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1) // red
-        } else {
-            changeColor = .secondaryLabelColor
-        }
-
-        let changeRange = (fullStr as NSString).range(of: changePart)
-        attributed.addAttribute(.foregroundColor, value: changeColor, range: changeRange)
+        // 状态栏只显示价格，例如 "1049.59"
+        let attributed = NSAttributedString(
+            string: format(price: currentPrice),
+            attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
 
         button.image = nil
         button.imagePosition = .noImage
@@ -600,6 +880,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func toggleFloatingCharacter() {
         isFloatingCharacterVisible.toggle()
         floatingCharacterController.setVisible(isFloatingCharacterVisible)
+        // 人物都藏起来了，它的聊天窗也别留着
+        if !isFloatingCharacterVisible {
+            chatController?.close()
+        }
         rebuildMenu()
         saveSettings()
     }
@@ -780,9 +1064,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if defaults.object(forKey: SettingsKey.floatingCharacterVisible) != nil {
             isFloatingCharacterVisible = defaults.bool(forKey: SettingsKey.floatingCharacterVisible)
         }
-        if let rawSize = defaults.object(forKey: SettingsKey.floatingCharacterSize) as? Double,
-           let size = FloatingCharacterSizeOption(rawValue: rawSize) {
-            floatingCharacterSize = size
+        if let rawSize = defaults.object(forKey: SettingsKey.floatingCharacterSize) as? Double {
+            // 老版本存过的 220 / 260 已经不在档位里了，按最接近的档位还原
+            floatingCharacterSize = FloatingCharacterSizeOption.option(forPersistedValue: rawSize)
         }
     }
 
@@ -855,7 +1139,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             updateTime: timeStr,
             refreshInterval: refreshInterval.title,
             alertInfo: alertInfo,
-            market: currentMarketData
+            market: currentMarketData,
+            stocks: StockWatchlist.entries.map { entry in
+                let quote = currentStockQuotes[entry.code]
+                    ?? .placeholder(code: entry.code, name: entry.name)
+                return StockRow(quote: quote, volumeRatio: stockVolumeRatio(for: quote))
+            }
+        )
+    }
+
+    /// 休市时举牌显示的问候语；交易日返回 nil
+    private func marketClosedGreeting() -> (headline: String, greeting: String)? {
+        guard !MarketCalendar.isTradingDay(Date(), holidays: holidays) else { return nil }
+        return MarketClosedGreeting.lines(
+            for: Date(),
+            holidayName: MarketCalendar.holidayName(on: Date(), holidays: holidays)
+        )
+    }
+
+    /// 节假日按天刷新：启动时读本地缓存，每天再拉一次写回本地
+    private func refreshHolidaysIfNeeded() {
+        let year = MarketCalendar.HolidayCache.year(of: Date())
+        if holidays.isEmpty {
+            holidays = MarketCalendar.HolidayCache.load(year: year, from: .standard)
+        }
+        guard holidayFetchDate.map({ !Calendar.current.isDate($0, inSameDayAs: Date()) }) ?? true else { return }
+        holidayFetchDate = Date()
+
+        Task { [weak self] in
+            guard let self else { return }
+            let fetched = await self.service.fetchHolidays(year: year)
+            guard !fetched.isEmpty else { return }   // 拉不到就沿用缓存（可能为空 → 退化为只按周末判断）
+            self.holidays = fetched
+            MarketCalendar.HolidayCache.save(fetched, year: year, to: .standard)
+        }
+    }
+
+    /// 「交易日显示价格与盈亏 / 休市显示问候语」的决策收在这一处
+    private func updateFloatingCharacter() {
+        if let greeting = marketClosedGreeting() {
+            floatingCharacterController.update(
+                price: greeting.headline,
+                numericPrice: currentPrice,
+                isNegative: nil,
+                profitLossText: greeting.greeting
+            )
+        } else {
+            floatingCharacterController.update(
+                price: format(price: currentPrice),
+                numericPrice: currentPrice,
+                isNegative: currentPriceInfo.isNegative,
+                profitLossText: totalProfitLossText() ?? ""
+            )
+        }
+    }
+
+    /// 组合当日盈亏文本（如 "-8,055"）。没有可统计的持仓时返回 nil，举牌退回单行。
+    ///
+    /// 按自选清单顺序取行情再求和：顺序稳定，结果可复现。
+    private func totalProfitLossText() -> String? {
+        var quotesByCode: [String: StockQuote] = [:]
+        for code in StockWatchlist.codes {
+            quotesByCode[code] = currentStockQuotes[code]
+        }
+        guard let total = StockProfitLoss.totalToday(quotesByCode: quotesByCode) else { return nil }
+        return HoldingFormat.profitLossText(total)
+    }
+
+    /// 量能倍数：预估全天量 ÷ 昨日全天量。
+    private func stockVolumeRatio(for quote: StockQuote) -> Double? {
+        guard !quote.sessionDate.isEmpty else { return nil }
+
+        // 报价时间戳属于今天 ⟹ 今天确实有场次在跑 → 用实时进度折算；
+        // 否则报价停留在上一场（周末 / 盘前 / 节假日）→ 进度按 1.0，直接显示那一场的收盘倍数。
+        // 这个不对称是刻意的：冻结场景传 1.0，开盘 15 分钟的宽限就不会把上一场的收盘倍数也压掉。
+        let progress = quote.sessionDate == TradingSession.dateString(for: Date())
+            ? TradingSession.progress(at: Date())
+            : 1.0
+
+        return StockVolume.ratio(
+            todayVolume: quote.volume,
+            previousVolume: StockVolume.previousVolume(
+                from: dailyBars[quote.code] ?? [],
+                sessionDate: quote.sessionDate
+            ),
+            progress: progress
         )
     }
 
@@ -882,6 +1250,7 @@ struct HoverPanelData {
     let refreshInterval: String
     let alertInfo: String
     let market: MarketData
+    let stocks: [StockRow]
 }
 
 // MARK: - Toast Notification Window
@@ -1051,6 +1420,28 @@ final class HoverPanel {
     private var changeLabel: NSTextField?
     private var infoValueLabels: [String: NSTextField] = [:]
     private var marketValueLabels: [String: NSTextField] = [:]
+    private var stockValueLabels: [String: NSTextField] = [:]
+    private var stockTitleLabels: [String: NSTextField] = [:]
+    private var stockSharesLabels: [String: NSTextField] = [:]
+    private var stockProfitLabels: [String: NSTextField] = [:]
+
+    // 自选行是四列（名称+量能 | 股数 | 现价+涨跌幅 | 当日盈亏）。
+    // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
+    // 数值列宽度按实测的最宽内容定：股数 "1,100,000" 55.6pt、现价 "3936.52  -0.39%" 93.6pt、
+    // 盈亏 "-1,234,567" 62.5pt；名称列吃剩余宽度（最宽 129.9pt）。
+    static let panelWidth: CGFloat = 410
+    static let padding: CGFloat = 16
+    static let columnGap: CGFloat = 8
+    static let sharesColumnWidth: CGFloat = 58
+    static let priceColumnWidth: CGFloat = 96
+    static let profitColumnWidth: CGFloat = 64
+    static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 3
+        - sharesColumnWidth - priceColumnWidth - profitColumnWidth
+
+    // 列表头文字（列宽测试会拿它们量宽度）
+    static let sharesHeader = "股数"
+    static let priceHeader = "现价"
+    static let profitHeader = "当日盈亏"
 
     var isVisible: Bool {
         window?.isVisible ?? false
@@ -1063,8 +1454,9 @@ final class HoverPanel {
     func show(below buttonRect: NSRect, data: HoverPanelData) {
         self.buttonRect = buttonRect
 
-        let panelWidth: CGFloat = 300
-        let padding: CGFloat = 16
+        let panelWidth = Self.panelWidth
+        let padding = Self.padding
+        let columnGap = Self.columnGap
         let labelColor = NSColor(white: 0.5, alpha: 1)
         let valueColor = NSColor(white: 0.85, alpha: 1)
         let sectionTitleColor = NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.0, alpha: 1)
@@ -1143,6 +1535,79 @@ final class HoverPanel {
             marketValueLabels[row.key] = vl
         }
 
+        // --- 自选行情 section ---
+        // 行数恒等于 StockWatchlist.entries（没数据的先占位显示 "--"），
+        // 因为面板高度是在 show() 里一次性算出来的。
+        let stockSectionTitle = NSTextField(labelWithString: "自选行情")
+        stockSectionTitle.font = .systemFont(ofSize: 11, weight: .semibold)
+        stockSectionTitle.textColor = sectionTitleColor
+        stockSectionTitle.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stockSectionTitle)
+
+        // 名称列：唯一允许被截断的一列，所以压缩阻力最低
+        func makeStockTitleLabel() -> NSTextField {
+            let label = NSTextField(labelWithString: "")
+            label.lineBreakMode = .byTruncatingTail
+            label.usesSingleLineMode = true
+            label.maximumNumberOfLines = 1
+            // 预算不够时只截断名称；两侧都不要用 .required，否则真挤不下时会打
+            // "Unable to simultaneously satisfy constraints"。其余列 751 保证数字永远完整。
+            label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(749), for: .horizontal)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(label)
+            return label
+        }
+
+        func makeStockCell(_ text: String, weight: NSFont.Weight, color: NSColor) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = .monospacedDigitSystemFont(ofSize: 11, weight: weight)
+            label.textColor = color
+            label.alignment = .right
+            label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(751), for: .horizontal)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(label)
+            return label
+        }
+
+        var stockRowCells: [(title: NSTextField, shares: NSTextField, value: NSTextField, profit: NSTextField)] = []
+
+        // 列表头。名称格给一个空格而不是空串：NSTextField 空串的固有高度是 0，
+        // 会把这一行压扁（行高取自名称格）。
+        let headerTitle = makeStockTitleLabel()
+        headerTitle.stringValue = " "
+        stockRowCells.append((
+            headerTitle,
+            makeStockCell(Self.sharesHeader, weight: .regular, color: labelColor),
+            makeStockCell(Self.priceHeader, weight: .regular, color: labelColor),
+            makeStockCell(Self.profitHeader, weight: .regular, color: labelColor)
+        ))
+
+        for row in data.stocks {
+            let quote = row.quote
+
+            // 名称 + 量能倍数放在同一个 label 里（富文本），截断策略写在段落样式里
+            let tl = makeStockTitleLabel()
+            tl.attributedStringValue = HoverPalette.stockTitle(name: quote.name, ratio: row.volumeRatio)
+
+            let sharesLabel = makeStockCell(row.sharesText, weight: .regular, color: valueColor)
+            let vl = makeStockCell(
+                formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent),
+                weight: .medium,
+                color: raisedColor(quote.raise, fallback: valueColor)
+            )
+            let profitLabel = makeStockCell(
+                row.profitLossText,
+                weight: .medium,
+                color: HoverPalette.trendColor(row.profitLoss, fallback: valueColor)
+            )
+
+            stockRowCells.append((tl, sharesLabel, vl, profitLabel))
+            stockTitleLabels[quote.code] = tl
+            stockSharesLabels[quote.code] = sharesLabel
+            stockValueLabels[quote.code] = vl
+            stockProfitLabels[quote.code] = profitLabel
+        }
+
         // --- Divider 2 ---
         let divider2 = makeDivider()
         container.addSubview(divider2)
@@ -1214,6 +1679,62 @@ final class HoverPanel {
         ])
 
         prev = divider2.bottomAnchor
+        constraints.append(contentsOf: [
+            stockSectionTitle.topAnchor.constraint(equalTo: prev, constant: 10),
+            stockSectionTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+        ])
+
+        prev = stockSectionTitle.bottomAnchor
+        for (i, cells) in stockRowCells.enumerated() {
+            let top: CGFloat = i == 0 ? 8 : 5
+            constraints.append(contentsOf: [
+                cells.title.topAnchor.constraint(equalTo: prev, constant: top),
+                cells.title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+
+                cells.profit.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+                cells.profit.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+
+                // 数值列的右边缘钉在常量偏移上：数字位数每秒变化也不会让整列左右滑动。
+                // 用 999 而不是 required：万一某列内容超宽，是整列左滑，
+                // 而不是打出 "Unable to simultaneously satisfy constraints"。
+                priority(
+                    cells.value.trailingAnchor.constraint(
+                        equalTo: cells.profit.trailingAnchor,
+                        constant: -(Self.profitColumnWidth + columnGap)
+                    ),
+                    999
+                ),
+                cells.value.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+
+                priority(
+                    cells.shares.trailingAnchor.constraint(
+                        equalTo: cells.value.trailingAnchor,
+                        constant: -(Self.priceColumnWidth + columnGap)
+                    ),
+                    999
+                ),
+                cells.shares.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+
+                // 名称列吃掉剩下的宽度，挤不下时由它截断
+                cells.title.trailingAnchor.constraint(
+                    lessThanOrEqualTo: cells.shares.leadingAnchor,
+                    constant: -columnGap
+                ),
+            ])
+            prev = cells.title.bottomAnchor
+        }
+
+        // --- Divider 3 (信息段) ---
+        let divider3 = makeDivider()
+        container.addSubview(divider3)
+        constraints.append(contentsOf: [
+            divider3.topAnchor.constraint(equalTo: prev, constant: 10),
+            divider3.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            divider3.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            divider3.heightAnchor.constraint(equalToConstant: 0.5),
+        ])
+
+        prev = divider3.bottomAnchor
         for (i, (tl, vl)) in infoLabelPairs.enumerated() {
             let top: CGFloat = i == 0 ? 8 : 5
             constraints.append(contentsOf: [
@@ -1299,6 +1820,20 @@ final class HoverPanel {
 
         marketValueLabels["dxy"]?.stringValue = formatValueWithPercent(price: m.dollarIndex.price, raisePercent: m.dollarIndex.raisePercent)
         marketValueLabels["dxy"]?.textColor = raisedColor(m.dollarIndex.raise, fallback: fallback)
+
+        for row in data.stocks {
+            let quote = row.quote
+            stockValueLabels[quote.code]?.stringValue =
+                formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
+            stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
+            stockTitleLabels[quote.code]?.attributedStringValue =
+                HoverPalette.stockTitle(name: quote.name, ratio: row.volumeRatio)
+
+            // 持仓两列：无持仓时是空串（留白）
+            stockSharesLabels[quote.code]?.stringValue = row.sharesText
+            stockProfitLabels[quote.code]?.stringValue = row.profitLossText
+            stockProfitLabels[quote.code]?.textColor = HoverPalette.trendColor(row.profitLoss, fallback: fallback)
+        }
     }
 
     func dismiss() {
@@ -1308,6 +1843,10 @@ final class HoverPanel {
         changeLabel = nil
         infoValueLabels.removeAll()
         marketValueLabels.removeAll()
+        stockValueLabels.removeAll()
+        stockTitleLabels.removeAll()
+        stockSharesLabels.removeAll()
+        stockProfitLabels.removeAll()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             window.animator().alphaValue = 0
@@ -1322,15 +1861,11 @@ final class HoverPanel {
 
     private func changeColor(for isNegative: Bool?) -> NSColor {
         guard let isNeg = isNegative else { return .secondaryLabelColor }
-        return isNeg
-            ? NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1)
-            : NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1)
+        return isNeg ? HoverPalette.fall : HoverPalette.rise
     }
 
     private func raisedColor(_ raise: Double, fallback: NSColor) -> NSColor {
-        if raise < 0 { return NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1) }
-        if raise > 0 { return NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1) }
-        return fallback
+        HoverPalette.trendColor(raise, fallback: fallback)
     }
 
     private func formatValueWithPercent(price: String, raisePercent: Double) -> String {
@@ -1339,6 +1874,12 @@ final class HoverPanel {
         let truncated = (pctValue * 100).rounded(.towardZero) / 100
         let sign = truncated > 0 ? "+" : ""
         return String(format: "%@  %@%.2f%%", price, sign, truncated)
+    }
+
+    /// 给约束降优先级用（列对齐约束不需要 required）
+    private func priority(_ constraint: NSLayoutConstraint, _ value: Float) -> NSLayoutConstraint {
+        constraint.priority = NSLayoutConstraint.Priority(value)
+        return constraint
     }
 
     private func makeDivider() -> NSView {
@@ -1351,11 +1892,34 @@ final class HoverPanel {
 }
 
 @main
-struct GoldPriceBarApp {
+struct MarketBarApp {
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
+        app.mainMenu = makeEditMenu()
         app.run()
+    }
+
+    /// 这个菜单**永远不会显示**（app 是 .accessory，没有菜单栏），它的唯一作用是让
+    /// ⌘V / ⌘C / ⌘X / ⌘A / ⌘Z 这些编辑快捷键能通过菜单路由进到文本视图。
+    /// 不加的话：聊天输入框能打字，但粘贴、复制、全选全都没反应。
+    /// （顺带修好了「价格提醒」输入框的同一个问题。）
+    static func makeEditMenu() -> NSMenu {
+        let mainMenu = NSMenu()
+
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "编辑")
+        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        mainMenu.addItem(editItem)
+
+        return mainMenu
     }
 }

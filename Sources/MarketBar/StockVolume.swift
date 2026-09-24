@@ -1,0 +1,198 @@
+import AppKit
+import Foundation
+
+/// A 股交易时段数学。
+///
+/// 时间基准固定用 UTC+8：A 股时段按北京墙上时间定义，1991 年之后中国不再实行夏令时，
+/// 所以固定偏移与 `Asia/Shanghai` 标识符等价，同时免去对本机时区与 tzdata 的依赖
+/// （本机可能在任何时区，用 `Calendar.current` 会把整个折算算错）。
+enum TradingSession {
+    static let timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+    static let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return calendar
+    }()
+
+    /// 09:30 - 11:30 + 13:00 - 15:00，全天 240 分钟
+    static let sessionMinutes: Double = 240
+    static let openMinutes: Double = 9 * 60 + 30
+    static let morningCloseMinutes: Double = 11 * 60 + 30
+    static let afternoonOpenMinutes: Double = 13 * 60
+    static let afternoonCloseMinutes: Double = 15 * 60
+    /// 开盘多久之后才开始按进度折算：更早的样本太少，折算出来的倍数没有参考价值
+    static let openingGraceMinutes: Double = 15
+
+    /// 交易时段进度 0...1。
+    /// 返回 nil 表示「现在不该显示折算值」：周末、09:30 之前、以及开盘后的宽限期内。
+    static func progress(at date: Date, calendar: Calendar = TradingSession.calendar) -> Double? {
+        let parts = calendar.dateComponents([.weekday, .hour, .minute], from: date)
+        guard let weekday = parts.weekday, let hour = parts.hour, let minute = parts.minute else {
+            return nil
+        }
+        // 周末没有任何场次。这里再挡一次，是为了兜住「接口在非交易日盖上当天时间戳」的情况
+        guard weekday != 1, weekday != 7 else { return nil }
+
+        let now = Double(hour * 60 + minute)
+        guard now >= openMinutes + openingGraceMinutes else { return nil }
+
+        if now <= morningCloseMinutes {
+            return (now - openMinutes) / sessionMinutes
+        }
+        if now < afternoonOpenMinutes {
+            // 午休：进度停在上午收市的 120/240
+            return (morningCloseMinutes - openMinutes) / sessionMinutes
+        }
+        if now <= afternoonCloseMinutes {
+            return (morningCloseMinutes - openMinutes + now - afternoonOpenMinutes) / sessionMinutes
+        }
+        return 1
+    }
+
+    /// 行情时间戳 `20260923161437` → `2026-09-23`。
+    /// 输出与日线日期同格式，可以直接做字符串比较。
+    static func sessionDate(fromQuoteTimestamp timestamp: String) -> String? {
+        guard timestamp.count >= 8 else { return nil }
+        let digits = timestamp.prefix(8)
+        guard digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+
+        let year = digits.prefix(4)
+        let month = digits.dropFirst(4).prefix(2)
+        let day = digits.dropFirst(6).prefix(2)
+        guard let monthValue = Int(month), let dayValue = Int(day),
+              (1...12).contains(monthValue), (1...31).contains(dayValue) else { return nil }
+        return "\(year)-\(month)-\(day)"
+    }
+
+    /// 北京时间的当天日期 `yyyy-MM-dd`
+    static func dateString(for date: Date, calendar: Calendar = TradingSession.calendar) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else { return "" }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+}
+
+/// 一根日线里用得到的部分
+struct StockDailyBar: Sendable {
+    let date: String     // "2026-09-22"
+    let volume: Double   // 成交量（手）
+}
+
+/// 量能（放量 / 缩量）的选基与判定，纯逻辑，便于单测。
+enum StockVolume {
+    static let expansionThreshold = 1.2
+    static let shrinkageThreshold = 0.8
+
+    /// 昨日全天量 = 日期严格早于会话日的最后一根日线。
+    ///
+    /// 不能取「倒数第二根」：周六看到的日线最后一根是周五（会话日也是周五），
+    /// 倒数第二根会错拿成周四。按会话日比较还带来一个好处——今日那根是否已经生成
+    /// 都不影响结果，所以日线每个交易日只需拉一次就能缓存一整天。
+    static func previousVolume(from bars: [StockDailyBar], sessionDate: String) -> Double? {
+        bars.last(where: { $0.date < sessionDate })?.volume
+    }
+
+    /// 量能倍数 = 预估全天量 ÷ 昨日全天量 = (今日累计量 ÷ 进度) ÷ 昨日全天量
+    static func ratio(todayVolume: Double, previousVolume: Double?, progress: Double?) -> Double? {
+        guard let progress, progress > 0, progress <= 1 else { return nil }
+        guard todayVolume > 0, let previousVolume, previousVolume > 0 else { return nil }
+        return (todayVolume / progress) / previousVolume
+    }
+
+    enum Word: Equatable {
+        case expansion   // 放量
+        case shrinkage   // 缩量
+        case none
+    }
+
+    /// 判定与显示共用同一个两位小数值，否则 0.796 会显示成 0.80 却不标「缩量」，自相矛盾。
+    static func normalized(_ ratio: Double) -> Double {
+        (ratio * 100).rounded() / 100
+    }
+
+    static func word(for ratio: Double?) -> Word {
+        guard let ratio else { return .none }
+        let value = normalized(ratio)
+        if value >= expansionThreshold { return .expansion }
+        if value <= shrinkageThreshold { return .shrinkage }
+        return .none
+    }
+
+    /// 名称列后面的尾巴文本：" 0.83" / " 0.47 缩量" / " 12.3 放量" / " --"
+    static func tailText(ratio: Double?) -> String {
+        guard let ratio else { return " --" }
+        let value = normalized(ratio)
+        let number = value < 10 ? String(format: "%.2f", value) : String(format: "%.1f", value)
+        switch word(for: ratio) {
+        case .expansion: return " \(number) 放量"
+        case .shrinkage: return " \(number) 缩量"
+        case .none: return " \(number)"
+        }
+    }
+}
+
+/// 面板的一行：接口原始数据 + 由时钟与日线缓存派生出的量能倍数。
+/// 倍数不放进 `StockQuote`，因为它是时钟和缓存的派生物，不是接口原样数据。
+struct StockRow: Sendable {
+    let quote: StockQuote
+    let volumeRatio: Double?
+
+    // 持仓相关都做成计算属性：构造点不用改，也不会和持仓表或行情漂移。
+
+    /// nil = 没有持仓（如指数），或股数非正
+    var shares: Int? { StockHoldings.shares(for: quote.code) }
+
+    /// 当日盈亏（元）；无持仓 / 无行情 / 涨跌额异常时为 nil
+    var profitLoss: Double? { StockProfitLoss.todayProfit(quote, shares: shares) }
+
+    /// 面板单元格文本：无持仓时是**空串**（留白），不是 "--"
+    var sharesText: String { shares.map(HoldingFormat.sharesText) ?? "" }
+    var profitLossText: String { profitLoss.map(HoldingFormat.profitLossText) ?? "" }
+}
+
+/// 悬浮面板的配色与富文本。`NSColor` 不是 Sendable，所以整体限定在主线程。
+@MainActor
+enum HoverPalette {
+    static let rise = NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1)
+    static let fall = NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1)
+    static let labelText = NSColor(white: 0.5, alpha: 1)
+    static let valueText = NSColor(white: 0.85, alpha: 1)
+    static let sectionTitle = NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.0, alpha: 1)
+
+    /// 涨跌配色（红涨绿跌），0 与 nil 走 fallback
+    static func trendColor(_ value: Double?, fallback: NSColor) -> NSColor {
+        guard let value else { return fallback }
+        if value < 0 { return fall }
+        if value > 0 { return rise }
+        return fallback
+    }
+
+    /// 放量红、缩量绿，其余与名称同灰
+    static func volumeColor(for word: StockVolume.Word) -> NSColor {
+        switch word {
+        case .expansion: return rise
+        case .shrinkage: return fall
+        case .none: return labelText
+        }
+    }
+
+    /// 名称列的富文本：灰色名称 + 着色的量能尾巴。
+    /// 数字用等宽数字字体，否则每秒刷新时位数变化会让整段左右抖动。
+    /// 截断方式写进段落样式 —— 用 attributedStringValue 之后由它决定怎么截断。
+    static func stockTitle(name: String, ratio: Double?) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        let text = NSMutableAttributedString(string: name, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: labelText,
+            .paragraphStyle: paragraph,
+        ])
+        text.append(NSAttributedString(string: StockVolume.tailText(ratio: ratio), attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: volumeColor(for: StockVolume.word(for: ratio)),
+            .paragraphStyle: paragraph,
+        ]))
+        return text
+    }
+}

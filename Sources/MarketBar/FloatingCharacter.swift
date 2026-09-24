@@ -11,56 +11,47 @@ enum FloatingCharacterEmotion: Equatable {
     }
 }
 
-enum FloatingCharacterPriceTrend: Equatable {
-    case up
-    case down
-    case flat
-
-    init(isNegative: Bool?) {
-        switch isNegative {
-        case true: self = .down
-        case false: self = .up
-        case nil: self = .flat
-        }
-    }
-
-    var color: NSColor {
-        switch self {
-        case .up:
-            return NSColor(calibratedRed: 0.95, green: 0.25, blue: 0.22, alpha: 1)
-        case .down:
-            return NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1)
-        case .flat:
-            return .secondaryLabelColor
-        }
-    }
-}
-
 enum FloatingCharacterSizeOption: Double, CaseIterable {
-    case small = 220
+    case mini = 160
+    case small = 200
     case standard = 240
-    case large = 260
+    case large = 280
+    case huge = 320
 
     static let defaultOption: FloatingCharacterSizeOption = .standard
+
+    /// 贴边模式按固定比例缩放（宽 0.75、高 0.4667），保证各档位观感一致
+    private static let dockedWidthRatio: CGFloat = 0.75
+    private static let dockedHeightRatio: CGFloat = 0.4667
 
     var size: NSSize {
         NSSize(width: rawValue, height: rawValue)
     }
 
     var dockedSize: NSSize {
-        switch self {
-        case .small: return NSSize(width: 165, height: 103)
-        case .standard: return NSSize(width: 180, height: 112)
-        case .large: return NSSize(width: 195, height: 122)
-        }
+        NSSize(
+            width: (rawValue * Self.dockedWidthRatio).rounded(),
+            height: (rawValue * Self.dockedHeightRatio).rounded()
+        )
     }
 
     var title: String {
         switch self {
-        case .small: return "最小（220×220）"
+        case .mini: return "迷你（160×160）"
+        case .small: return "小（200×200）"
         case .standard: return "默认（240×240）"
-        case .large: return "最大（260×260）"
+        case .large: return "大（280×280）"
+        case .huge: return "超大（320×320）"
         }
+    }
+
+    /// 还原持久化的尺寸：老版本存过 220 / 260 这类已经不在档位里的值，
+    /// 直接 `rawValue:` 初始化会失败并悄悄回到默认，所以按最接近的档位还原。
+    static func option(forPersistedValue value: Double) -> FloatingCharacterSizeOption {
+        if let exact = FloatingCharacterSizeOption(rawValue: value) { return exact }
+        return allCases.min {
+            abs($0.rawValue - value) < abs($1.rawValue - value)
+        } ?? .defaultOption
     }
 }
 
@@ -578,6 +569,9 @@ final class FloatingCharacterController: NSObject {
     private(set) var presentationMode: FloatingCharacterPresentationMode = .full
     var panelSize: NSSize { panel.frame.size }
 
+    /// 右键人物（参数是屏幕坐标下的 frame）。控制器只负责转发，不认识 AppDelegate 或聊天。
+    var onRightClick: ((NSRect) -> Void)?
+
     nonisolated(unsafe) private var actionTimer: Timer?
     nonisolated(unsafe) private var ambientActionTimer: Timer?
     nonisolated(unsafe) private var dockedBlinkScheduleTimer: Timer?
@@ -626,6 +620,9 @@ final class FloatingCharacterController: NSObject {
         }
         characterView.onClick = { [weak self] in
             self?.handleClick()
+        }
+        characterView.onRightClick = { [weak self] anchor in
+            self?.onRightClick?(anchor)
         }
         characterView.onDragBegan = { [weak self] in
             self?.beginDragInteraction()
@@ -745,10 +742,13 @@ final class FloatingCharacterController: NSObject {
         }
     }
 
-    func update(price: String, numericPrice: Double, isNegative: Bool?) {
+    func update(price: String, numericPrice: Double, isNegative: Bool?, profitLossText: String? = nil) {
         let nextEmotion = FloatingCharacterEmotion(isNegative: isNegative)
         characterView.price = price
-        characterView.priceTrend = FloatingCharacterPriceTrend(isNegative: isNegative)
+        // 只在明确传入时才动第二行：金价每秒都在刷新，不能顺手把盈亏那行清掉
+        if let profitLossText {
+            characterView.profitLossText = profitLossText
+        }
 
         if nextEmotion != emotion {
             emotion = nextEmotion
@@ -766,6 +766,14 @@ final class FloatingCharacterController: NSObject {
         if let reaction = marketReactionDetector.process(price: numericPrice, at: nowProvider()) {
             handleMarketReaction(reaction)
         }
+    }
+
+    /// 只更新举牌第二行（组合当日盈亏）。
+    ///
+    /// 单独一个入口：股票行情比金价晚到（`refreshPrice` 里刻意不 await 股票任务），
+    /// 不能把股票请求塞进金价刷新的关键路径。
+    func updateProfitLoss(_ text: String?) {
+        characterView.profitLossText = text
     }
 
     func resetQuoteHistory() {
@@ -1845,16 +1853,29 @@ final class FloatingCharacterView: NSView {
 
     var onPointerDown: (() -> Void)?
     var onClick: (() -> Void)?
+    /// 右键（触控板两指点按）。参数是人物在屏幕坐标下的 frame，用来给聊天窗定位。
+    var onRightClick: ((NSRect) -> Void)?
     var onDragBegan: (() -> Void)?
     var onDrag: ((NSPoint, NSPoint, NSPoint) -> Void)?
     var onDragEnded: ((NSPoint, NSPoint) -> Void)?
+
+    /// 举牌上的数字固定使用中性墨色，不随涨跌变色。
+    static let priceInkColor = NSColor(calibratedRed: 0.27, green: 0.18, blue: 0.38, alpha: 1)
+
+    /// 牌子内文字的可用区往里收的边距：收得越少字越大，但太小会压到牌子边框。
+    static let signTextInset = NSSize(width: 3, height: 2)
 
     var price: String = "0.00" {
         didSet { needsDisplay = true }
     }
 
-    var priceTrend: FloatingCharacterPriceTrend = .flat {
-        didSet { needsDisplay = true }
+    /// 举牌第二行：组合当日盈亏合计，如 "-8,055"。nil / 空串 = 只画金价一行。
+    var profitLossText: String? {
+        didSet {
+            // 相等判断：合计的整数元通常几秒才变一次，没必要每秒把整个视图标脏
+            guard profitLossText != oldValue else { return }
+            needsDisplay = true
+        }
     }
 
     var pose: FloatingCharacterPose = .happy {
@@ -1943,6 +1964,13 @@ final class FloatingCharacterView: NSView {
         maximumDragDistance = 0
         didBeginDrag = false
         dragVelocityTracker.reset(point: NSEvent.mouseLocation, timestamp: event.timestamp)
+    }
+
+    /// 触控板双指点按 / 鼠标右键。整条路径不碰左键的连击状态机（单击/双击/连击逻辑完全不受影响），
+    /// 也不调用 super —— 顺带屏蔽掉继承来的右键菜单。
+    override func rightMouseDown(with event: NSEvent) {
+        guard let window else { return }
+        onRightClick?(window.convertToScreen(convert(bounds, to: nil)))
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -2179,32 +2207,60 @@ final class FloatingCharacterView: NSView {
                 height: Self.dockedRightSignRect.height
             )
         }
-        let signRect = Self.signRect(in: bounds, normalized: normalizedSignRect).insetBy(dx: 5, dy: 4)
+        let signRect = Self.signRect(in: bounds, normalized: normalizedSignRect)
+            .insetBy(dx: Self.signTextInset.width, dy: Self.signTextInset.height)
         guard signRect.width > 0, signRect.height > 0 else { return }
 
-        let fontSize = Self.fittedFontSize(for: price, in: signRect.size)
+        // 第二行（组合当日盈亏）没有数据时，可用区就是整个牌子 —— 退化成单行，与改动前一致
+        let profitText = FloatingCharacterSignLayout.normalizedProfitText(profitLossText)
+        let available = FloatingCharacterSignLayout.availableSizes(in: signRect, hasProfit: profitText != nil)
+
+        // 两行各自适配字号（而不是把两行拼成一个带换行的字符串去适配：
+        // 那样两行会共用一个字号，长的那行还会拖累另一行）
+        // 盈亏是主角：先按盈亏那一半定字号，再把金价压到它的一定比例以内。
+        let profitFontSize = profitText.flatMap { text in
+            available.profit.map { Self.fittedFontSize(for: text, in: $0) }
+        }
+        let priceFontSize = profitFontSize.map {
+            min(
+                Self.fittedFontSize(for: price, in: available.price),
+                $0 * FloatingCharacterSignLayout.priceFontScale
+            )
+        } ?? Self.fittedFontSize(for: price, in: available.price)
+
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.white.withAlphaComponent(0.75)
         shadow.shadowBlurRadius = 1
         shadow.shadowOffset = NSSize(width: 0, height: -1)
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold),
-            .foregroundColor: priceTrend.color,
+        let priceAttributed = NSAttributedString(string: price, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: priceFontSize, weight: .semibold),
+            .foregroundColor: Self.priceInkColor,
             .shadow: shadow,
-        ]
-        let attributed = NSAttributedString(string: price, attributes: attributes)
-        let measured = attributed.size()
-        let drawRect = NSRect(
-            x: signRect.midX - measured.width / 2,
-            y: signRect.midY - measured.height / 2,
-            width: measured.width,
-            height: measured.height
+        ])
+        let profitAttributed = profitText.flatMap { text in
+            profitFontSize.map { size in
+                NSAttributedString(string: text, attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold),
+                    // 用户明确要求这一行不上色，所以用与金价相同的墨色
+                    .foregroundColor: Self.priceInkColor,
+                    .shadow: shadow,
+                ])
+            }
+        }
+
+        let origins = FloatingCharacterSignLayout.drawOrigins(
+            priceSize: priceAttributed.size(),
+            profitSize: profitAttributed?.size(),
+            in: signRect
         )
 
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: signRect).addClip()
-        attributed.draw(in: drawRect)
+        priceAttributed.draw(at: origins.price)
+        if let profitAttributed, let profitOrigin = origins.profit {
+            profitAttributed.draw(at: profitOrigin)
+        }
         NSGraphicsContext.restoreGraphicsState()
     }
 
