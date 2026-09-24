@@ -42,7 +42,8 @@ enum UnreadBadge {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
               !app.isTerminated else { return false }
 
-        let source = "tell application id \"\(bundleID)\" to activate"
+        // reopen 才会把「进程还在但窗口已关闭」的窗口重新开出来；activate 只管把 app 提到前台
+        let source = "tell application id \"\(bundleID)\"\n reopen\n activate\nend tell"
         guard let script = NSAppleScript(source: source) else { return false }
         var error: NSDictionary?
         script.executeAndReturnError(&error)
