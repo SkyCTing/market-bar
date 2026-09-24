@@ -41,69 +41,30 @@ enum UnreadBadge {
         return counts
     }
 
-    /// 取某个进程「第二个菜单栏」（第一个是 App 自己的菜单，状态项在第二个）里那一项的标题
+    /// 取某个进程的「菜单栏附加项」（状态项）里那一项的标题。
+    /// ⚠️ 必须用 AXExtrasMenuBar：状态项挂在 app 的 extras 菜单栏上，
+    /// 读 kAXMenuBar 只会拿到 App 自己的菜单（Apple/文件/编辑…），读 kAXChildren 只能拿到窗口。
     private static func statusItemTitle(pid: pid_t) -> Int? {
         let appElement = AXUIElementCreateApplication(pid)
 
-        var menuBars: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXMenuBarAttribute as CFString, &menuBars) == .success,
-              let menuBar = menuBars else { return nil }
-        // 状态项挂在 menu bar 2 上；AX 里通过 AXChildren 能拿到全部菜单栏
-        var children: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXChildrenAttribute as CFString, &children) == .success,
-              let elements = children as? [AXUIElement] else { return nil }
+        var extrasRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement, "AXExtrasMenuBar" as CFString, &extrasRef
+        ) == .success, let extrasRef else { return nil }
+        let extrasBar = extrasRef as! AXUIElement
 
-        for element in elements where AXUIElementGetTypeID() == CFGetTypeID(element) {
-            var title: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title) == .success else { continue }
-            if let text = title as? String, let count = count(fromStatusTitle: text) {
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            extrasBar, kAXChildrenAttribute as CFString, &childrenRef
+        ) == .success, let items = childrenRef as? [AXUIElement] else { return nil }
+
+        for item in items {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(item, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let count = count(fromStatusTitle: titleRef as? String) {
                 return count
             }
         }
-        _ = menuBar
         return nil
-    }
-}
-
-/// 未读数字的圆形徽标（红底白字），没有未读时整颗隐藏
-@MainActor
-final class UnreadCountBadgeView: NSView {
-    static let diameter: CGFloat = 22
-
-    private let label = NSTextField(labelWithString: "")
-
-    init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(calibratedRed: 0.92, green: 0.22, blue: 0.2, alpha: 1).cgColor
-        layer?.cornerRadius = Self.diameter / 2
-        layer?.borderColor = NSColor(white: 1, alpha: 0.35).cgColor
-        layer?.borderWidth = 0.5
-
-        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .bold)
-        label.textColor = .white
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            widthAnchor.constraint(equalToConstant: Self.diameter),
-            heightAnchor.constraint(equalToConstant: Self.diameter),
-        ])
-        isHidden = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// 数字为 nil 或 0 时隐藏；超过 99 显示 99+
-    func update(count: Int?) {
-        guard let count, count > 0 else {
-            isHidden = true
-            return
-        }
-        label.stringValue = count > 99 ? "99+" : "\(count)"
-        isHidden = false
     }
 }
