@@ -111,6 +111,16 @@ enum HoldingFormat {
         return text
     }
 
+    /// 浮动盈亏那一格：「+6,500  +12.34%」。
+    /// 金额和收益率缺任何一个就整体留空 —— 只显示半个比不显示更让人犯嘀咕。
+    static func floatingProfit(profit: Double?, percent: Double?) -> String {
+        guard let profit, let percent, percent.isFinite else { return "" }
+        // 收益率按两位小数**截断**（不是四舍五入），和现价那列的涨跌幅口径一致
+        let pct = ((percent * 100) * 100).rounded(.towardZero) / 100
+        let sign = pct > 0 ? "+" : ""
+        return "\(profitLossText(profit))  \(sign)\(String(format: "%.2f", pct))%"
+    }
+
     /// 三位一组。只喂纯数字串。
     static func grouped(_ digits: String) -> String {
         guard digits.count > 3 else { return digits }

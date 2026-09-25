@@ -1593,7 +1593,7 @@ final class HoverPanel {
     // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
     // 数值列宽度按实测的最宽内容定：股数 "1,100,000" 55.6pt、现价 "3936.52  -0.39%" 93.6pt、
     // 盈亏 "-1,234,567" 62.5pt；名称列吃剩余宽度（最宽 129.9pt）。
-    static let panelWidth: CGFloat = 610
+    static let panelWidth: CGFloat = 650
     static let padding: CGFloat = 16
     static let columnGap: CGFloat = 8
     static let volumeColumnWidth: CGFloat = 74
@@ -1601,7 +1601,7 @@ final class HoverPanel {
     static let costColumnWidth: CGFloat = 56
     static let priceColumnWidth: CGFloat = 96
     static let profitColumnWidth: CGFloat = 64
-    static let floatingColumnWidth: CGFloat = 78
+    static let floatingColumnWidth: CGFloat = 116
     /// 名称列吃剩余宽度。列多了之后这列变窄，加列时记得一起调 panelWidth
     static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 6
         - volumeColumnWidth - sharesColumnWidth - costColumnWidth

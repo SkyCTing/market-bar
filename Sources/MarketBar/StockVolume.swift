@@ -194,7 +194,17 @@ struct StockRow: Sendable {
     var sharesText: String { shares.map(HoldingFormat.sharesText) ?? "" }
     var profitLossText: String { profitLoss.map(HoldingFormat.profitLossText) ?? "" }
     var costText: String { HoldingFormat.cost(cost) }
-    var floatingProfitText: String { floatingProfit.map(HoldingFormat.profitLossText) ?? "" }
+
+    /// 浮动收益率 =（现价 − 成本）÷ 成本。只要成本与现价，与股数无关
+    var floatingProfitPercent: Double? {
+        guard let price = quote.numericPrice, let cost, cost > 0 else { return nil }
+        return (price - cost) / cost
+    }
+
+    /// 面板那一格：「金额  收益率%」。缺成本或缺持仓就是空串（留白），不是 "--"
+    var floatingProfitText: String {
+        HoldingFormat.floatingProfit(profit: floatingProfit, percent: floatingProfitPercent)
+    }
 }
 
 /// 悬浮面板的配色与富文本。`NSColor` 不是 Sendable，所以整体限定在主线程。

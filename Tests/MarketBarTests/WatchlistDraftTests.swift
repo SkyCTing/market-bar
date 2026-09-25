@@ -363,3 +363,28 @@ final class WatchlistCostTests: XCTestCase {
         XCTAssertTrue(config.costs.isEmpty, "老文件没有 costs 键，应当是空的而不是解码失败")
     }
 }
+
+
+// MARK: - 浮动盈亏那一格的格式
+
+final class FloatingProfitFormatTests: XCTestCase {
+    func testAmountAndPercent() {
+        XCTAssertEqual(HoldingFormat.floatingProfit(profit: 6_500, percent: 0.1234), "+6,500  +12.34%")
+        XCTAssertEqual(HoldingFormat.floatingProfit(profit: -1_200.4, percent: -0.0512), "-1,200  -5.12%")
+    }
+
+    /// 只显示半个（只有金额没有收益率）比不显示更让人犯嘀咕
+    func testEmptyWhenEitherSideIsMissing() {
+        XCTAssertEqual(HoldingFormat.floatingProfit(profit: nil, percent: 0.1), "")
+        XCTAssertEqual(HoldingFormat.floatingProfit(profit: 100, percent: nil), "")
+    }
+
+    /// 收益率按两位小数截断，和现价那列的涨跌幅口径一致
+    func testPercentTruncatesRatherThanRounds() {
+        XCTAssertEqual(HoldingFormat.floatingProfit(profit: 100, percent: 0.129_99), "+100  +12.99%")
+    }
+
+    func testZeroIsUnsigned() {
+        XCTAssertEqual(HoldingFormat.floatingProfit(profit: 0, percent: 0), "0  0.00%")
+    }
+}
