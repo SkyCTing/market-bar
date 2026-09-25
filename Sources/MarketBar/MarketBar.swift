@@ -510,6 +510,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hoverPanel: HoverPanel?
     /// 右键人物弹出的 AI 聊天窗（懒创建）
     private var chatController: ClaudeChatController?
+    /// 提醒（配置存 UserDefaults，30 秒扫一次）
+    private let reminderStore = ReminderStore()
+    private lazy var reminderCenter = ReminderCenter(
+        store: reminderStore,
+        characterController: floatingCharacterController
+    )
+
     /// 微信未读数（面板左右两个徽标用）
     private var unreadCounts = UnreadBadge.Counts()
     /// 法定节假日（"2026-10-01" → "国庆节"），每天刷新一次，落在本地
@@ -873,6 +880,125 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
         restartTimer()
         saveSettings()
+    }
+
+    // MARK: - 提醒
+
+    private func makeReminderMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "提醒", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "提醒")
+
+        for reminder in reminderStore.reminders {
+            let entry = NSMenuItem(
+                title: reminder.summary,
+                action: #selector(editReminder(_:)),
+                keyEquivalent: ""
+            )
+            entry.target = self
+            entry.representedObject = reminder
+            submenu.addItem(entry)
+        }
+        if !reminderStore.reminders.isEmpty {
+            submenu.addItem(.separator())
+        }
+
+        let add = NSMenuItem(title: "添加提醒…", action: #selector(addReminder), keyEquivalent: "")
+        add.target = self
+        submenu.addItem(add)
+
+        let test = NSMenuItem(title: "测试：立即提醒", action: #selector(testReminder), keyEquivalent: "")
+        test.target = self
+        submenu.addItem(test)
+
+        if !reminderStore.reminders.isEmpty {
+            let clear = NSMenuItem(title: "清空全部", action: #selector(clearReminders), keyEquivalent: "")
+            clear.target = self
+            submenu.addItem(clear)
+        }
+
+        menu.setSubmenu(submenu, for: item)
+        return item
+    }
+
+    @objc private func addReminder() {
+        showReminderDialog(editing: nil)
+    }
+
+    @objc private func editReminder(_ sender: NSMenuItem) {
+        guard let reminder = sender.representedObject as? Reminder else { return }
+        showReminderDialog(editing: reminder)
+    }
+
+    @objc private func testReminder() {
+        let sample = reminderStore.reminders.first
+            ?? Reminder(title: "测试提醒", body: "这是一条测试提醒", hour: 9, minute: 0)
+        reminderCenter.fire(sample)
+    }
+
+    @objc private func clearReminders() {
+        reminderStore.removeAll()
+        rebuildMenu()
+    }
+
+    /// 添加 / 编辑提醒的对话框：时间 + 重复 + 文案
+    private func showReminderDialog(editing reminder: Reminder?) {
+        let alert = NSAlert()
+        alert.messageText = reminder == nil ? "添加提醒" : "编辑提醒"
+        alert.informativeText = "时间格式 HH:mm；删除这条提醒请点「删除」"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        if reminder != nil { alert.addButton(withTitle: "删除") }
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 76))
+
+        let timeField = NSTextField(frame: NSRect(x: 0, y: 46, width: 80, height: 24))
+        timeField.placeholderString = "HH:mm"
+        timeField.stringValue = reminder?.timeText ?? "09:00"
+
+        let repeatPopup = NSPopUpButton(frame: NSRect(x: 88, y: 46, width: 140, height: 25))
+        repeatPopup.addItems(withTitles: ["每天"] + (1...7).map { "每\(["日","一","二","三","四","五","六"][$0-1])" } + (1...31).map { "每月\($0)号" })
+        if let rule = reminder?.repeatRule {
+            switch rule {
+            case .daily: repeatPopup.selectItem(at: 0)
+            case .weekly(let weekday): repeatPopup.selectItem(at: weekday)
+            case .monthly(let day): repeatPopup.selectItem(at: 7 + day)
+            }
+        }
+
+        let bodyField = NSTextField(frame: NSRect(x: 0, y: 12, width: 300, height: 24))
+        bodyField.placeholderString = "提醒内容，例如：还信用卡"
+        bodyField.stringValue = reminder?.body ?? ""
+
+        for view in [timeField, repeatPopup, bodyField] { container.addSubview(view) }
+        alert.accessoryView = container
+        alert.window.initialFirstResponder = timeField
+
+        let response = alert.runModal()
+        if response == .alertThirdButtonReturn, let reminder {
+            reminderStore.remove(id: reminder.id)
+            rebuildMenu()
+            return
+        }
+        guard response == .alertFirstButtonReturn else { return }
+
+        let parts = timeField.stringValue.split(separator: ":")
+        guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+              (0...23).contains(hour), (0...59).contains(minute) else {
+            NSSound.beep()
+            return
+        }
+        let index = repeatPopup.indexOfSelectedItem
+        let rule: Reminder.Repeat = index == 0 ? .daily
+            : (index <= 7 ? .weekly(weekday: index) : .monthly(day: index - 7))
+
+        var updated = reminder ?? Reminder(body: "", hour: hour, minute: minute)
+        updated.hour = hour
+        updated.minute = minute
+        updated.repeatRule = rule
+        updated.body = bodyField.stringValue.isEmpty ? "提醒" : bodyField.stringValue
+        updated.title = updated.body
+        reminderStore.upsert(updated)
+        rebuildMenu()
     }
 
     @objc

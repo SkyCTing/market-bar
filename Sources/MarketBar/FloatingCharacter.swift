@@ -968,6 +968,18 @@ final class FloatingCharacterController: NSObject {
         showSpeech(trigger: speechTrigger)
     }
 
+    /// 让人物说一句**指定的话**（提醒用；showSpeech 的文案是从目录里按触发类型取的）
+    func say(_ text: String, duration: TimeInterval = 10) {
+        guard isVisible,
+              let targetScreen = panel.screen ?? screen(containing: panel.frame) ?? NSScreen.main else { return }
+        speechBubbleController.show(
+            text: text,
+            anchor: panel.frame,
+            visibleFrame: targetScreen.visibleFrame,
+            duration: duration
+        )
+    }
+
     private func showSpeech(
         trigger: FloatingCharacterSpeechTrigger,
         duration: TimeInterval? = FloatingCharacterSpeechCatalog.displayDuration
