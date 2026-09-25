@@ -343,16 +343,17 @@ final class GoldPriceService: Sendable {
 
     /// 法定节假日（timor.tech 的年接口，含调休补班信息）。
     /// 只用来判断「今天是不是交易日」和取节日名，拉不到就退化为只按周末判断。
-    func fetchHolidays(year: Int) async -> [String: String] {
-        guard let url = URL(string: "https://timor.tech/api/holiday/year/\(year)") else { return [:] }
+    /// 一次请求同时取回：法定节假日（日期 → 节日名）与调休补班日（这些日子要照常提醒）
+    func fetchHolidays(year: Int) async -> (holidays: [String: String], makeupWorkdays: Set<String>) {
+        guard let url = URL(string: "https://timor.tech/api/holiday/year/\(year)") else { return ([:], []) }
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
 
         do {
             let (data, _) = try await session.data(for: request)
-            return MarketCalendar.parseHolidays(data)
+            return (MarketCalendar.parseHolidays(data), MarketCalendar.parseMakeupWorkdays(data))
         } catch {
-            return [:]
+            return ([:], [])
         }
     }
 
@@ -521,6 +522,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var unreadCounts = UnreadBadge.Counts()
     /// 法定节假日（"2026-10-01" → "国庆节"），每天刷新一次，落在本地
     private var holidays: [String: String] = [:]
+    /// 调休补班日（这些周六/周日要上班，提醒照常）
+    private var makeupWorkdays: Set<String> = []
     private var holidayFetchDate: Date?
 
     // Price alert state
@@ -1279,15 +1282,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if holidays.isEmpty {
             holidays = MarketCalendar.HolidayCache.load(year: year, from: .standard)
         }
+        if makeupWorkdays.isEmpty {
+            makeupWorkdays = MarketCalendar.HolidayCache.loadMakeupWorkdays(year: year, from: .standard)
+        }
         guard holidayFetchDate.map({ !Calendar.current.isDate($0, inSameDayAs: Date()) }) ?? true else { return }
         holidayFetchDate = Date()
 
         Task { [weak self] in
             guard let self else { return }
             let fetched = await self.service.fetchHolidays(year: year)
-            guard !fetched.isEmpty else { return }   // 拉不到就沿用缓存（可能为空 → 退化为只按周末判断）
-            self.holidays = fetched
-            MarketCalendar.HolidayCache.save(fetched, year: year, to: .standard)
+            guard !fetched.holidays.isEmpty else { return }   // 拉不到就沿用缓存（可能为空 → 退化为只按周末判断）
+            self.holidays = fetched.holidays
+            self.makeupWorkdays = fetched.makeupWorkdays
+            MarketCalendar.HolidayCache.save(fetched.holidays, year: year, to: .standard)
+            MarketCalendar.HolidayCache.saveMakeupWorkdays(fetched.makeupWorkdays, year: year, to: .standard)
         }
     }
 

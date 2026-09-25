@@ -12,14 +12,16 @@ final class ReminderDialogView: NSView {
     private let monthDayPopup = NSPopUpButton()
     private let weekdayLabel = NSTextField(labelWithString: "周几")
     private let monthDayLabel = NSTextField(labelWithString: "几号")
+    private let dayIntervalLabel = NSTextField(labelWithString: "天数")
+    private let dayIntervalField = NSTextField()
     private let skipHolidaysCheckbox = NSButton(
-        checkboxWithTitle: "节假日不提醒（周末与法定节假日都跳过）",
+        checkboxWithTitle: "智能跳过节假日（调休上班日照常提醒）",
         target: nil,
         action: nil
     )
     private let bodyField = NSTextField()
 
-    private static let repeatTitles = ["每天", "每周", "每月"]
+    private static let repeatTitles = ["每天", "每周", "每月", "每 N 天"]
 
     init(reminder: Reminder?) {
         super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 158))
@@ -62,6 +64,14 @@ final class ReminderDialogView: NSView {
         monthDayPopup.addItems(withTitles: (1...31).map { "\($0) 号" })
         addSubview(monthDayPopup)
 
+        dayIntervalLabel.frame = NSRect(x: 160, y: 93, width: 32, height: 18)
+        dayIntervalLabel.alignment = .right
+        addSubview(dayIntervalLabel)
+        dayIntervalField.frame = NSRect(x: 196, y: 88, width: 60, height: 24)
+        dayIntervalField.placeholderString = "N"
+        dayIntervalField.stringValue = "2"
+        addSubview(dayIntervalField)
+
         // ── 节假日开关
         skipHolidaysCheckbox.frame = NSRect(x: 52, y: 58, width: 300, height: 20)
         addSubview(skipHolidaysCheckbox)
@@ -98,6 +108,9 @@ final class ReminderDialogView: NSView {
         case .monthly(let day):
             repeatPopup.selectItem(at: 2)
             monthDayPopup.selectItem(at: max(0, min(30, day - 1)))
+        case .everyDays(let interval):
+            repeatPopup.selectItem(at: 3)
+            dayIntervalField.stringValue = "\(max(1, interval))"
         default:
             repeatPopup.selectItem(at: 0)
         }
@@ -114,10 +127,13 @@ final class ReminderDialogView: NSView {
         let index = repeatPopup.indexOfSelectedItem
         let weekly = index == 1
         let monthly = index == 2
+        let everyDays = index == 3
         weekdayLabel.isHidden = !weekly
         weekdayPopup.isHidden = !weekly
         monthDayLabel.isHidden = !monthly
         monthDayPopup.isHidden = !monthly
+        dayIntervalLabel.isHidden = !everyDays
+        dayIntervalField.isHidden = !everyDays
     }
 
     /// 组装成 Reminder；时间非法时返回 nil
@@ -132,6 +148,7 @@ final class ReminderDialogView: NSView {
         switch repeatPopup.indexOfSelectedItem {
         case 1: repeatRule = .weekly(weekday: weekdayPopup.indexOfSelectedItem + 1)
         case 2: repeatRule = .monthly(day: monthDayPopup.indexOfSelectedItem + 1)
+        case 3: repeatRule = .everyDays(interval: max(1, Int(dayIntervalField.stringValue) ?? 2))
         default: repeatRule = .daily
         }
 
@@ -144,6 +161,13 @@ final class ReminderDialogView: NSView {
         result.skipHolidays = skipHolidaysCheckbox.state == .on
         result.body = body.isEmpty ? "提醒" : body
         result.title = result.body
+        // 「每 N 天」需要起算日：新建时写今天，编辑时保持原值
+        if result.anchorDay.isEmpty {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.timeZone = TradingSession.timeZone
+            result.anchorDay = formatter.string(from: Date())
+        }
         return result
     }
 }

@@ -154,3 +154,137 @@ final class ReminderSecondAndHolidayTests: XCTestCase {
         XCTAssertFalse(decoded.first?.skipHolidays ?? true)
     }
 }
+
+/// 「每 N 天」重复规则
+final class ReminderEveryDaysTests: XCTestCase {
+    private let calendar = TradingSession.calendar
+
+    private func at(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
+    }
+
+    private func everyDays(_ interval: Int, anchor: String = "2026-09-01") -> Reminder {
+        var r = Reminder(title: "t", body: "b", hour: 9, minute: 0)
+        r.repeatRule = .everyDays(interval: interval)
+        r.anchorDay = anchor
+        return r
+    }
+
+    func testDaysBetween() {
+        XCTAssertEqual(ReminderScheduler.daysBetween("2026-09-01", and: at(4, 9, 0), calendar: calendar), 3)
+        XCTAssertEqual(ReminderScheduler.daysBetween("2026-09-01", and: at(1, 23, 59), calendar: calendar), 0)
+        XCTAssertNil(ReminderScheduler.daysBetween("", and: at(1, 9, 0), calendar: calendar))
+        XCTAssertNil(ReminderScheduler.daysBetween("不是日期", and: at(1, 9, 0), calendar: calendar))
+    }
+
+    /// 锚点 9/1，每 3 天 → 9/1、9/4、9/7 触发；9/2、9/3 不触发
+    func testEveryThreeDays() {
+        let r = everyDays(3)
+        XCTAssertTrue(ReminderScheduler.isDue(r, at: at(1, 9, 0), calendar: calendar))
+        XCTAssertFalse(ReminderScheduler.isDue(r, at: at(2, 9, 0), calendar: calendar))
+        XCTAssertFalse(ReminderScheduler.isDue(r, at: at(3, 9, 0), calendar: calendar))
+        XCTAssertTrue(ReminderScheduler.isDue(r, at: at(4, 9, 0), calendar: calendar))
+        XCTAssertTrue(ReminderScheduler.isDue(r, at: at(7, 9, 0), calendar: calendar))
+    }
+
+    /// 时间不匹配照样不触发
+    func testEveryDaysStillRequiresTheTime() {
+        XCTAssertFalse(ReminderScheduler.isDue(everyDays(1), at: at(2, 9, 1), calendar: calendar))
+    }
+
+    /// 锚点缺失时按「该提醒」处理，不要因为数据缺字段而漏提醒
+    func testMissingAnchorFailsOpen() {
+        XCTAssertTrue(ReminderScheduler.isDue(everyDays(3, anchor: ""), at: at(2, 9, 0), calendar: calendar))
+    }
+
+    func testNextFireDateForEveryDays() {
+        // 9/2 12:00（锚点 9/1、每 3 天）→ 下一次应是 9/4 09:00
+        let next = ReminderScheduler.nextFireDate(after: at(2, 12, 0), reminder: everyDays(3), calendar: calendar)
+        let parts = next.map { calendar.dateComponents([.month, .day, .hour], from: $0) }
+        XCTAssertEqual(parts?.day, 4)
+        XCTAssertEqual(parts?.hour, 9)
+    }
+
+    func testTitleShowsInterval() {
+        XCTAssertEqual(Reminder.Repeat.everyDays(interval: 5).title, "每5天")
+    }
+}
+
+/// 「智能跳过节假日」：补班的周末算工作日，照常提醒
+final class ReminderMakeupWorkdayTests: XCTestCase {
+    private let calendar = TradingSession.calendar
+
+    private func at(_ year: Int, _ month: Int, _ day: Int, _ hour: Int = 9) -> Date {
+        calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: 0))!
+    }
+
+    private var smartReminder: Reminder {
+        var r = Reminder(title: "t", body: "b", hour: 9, minute: 0)
+        r.skipHolidays = true
+        return r
+    }
+
+    /// 2026-09-26 是周六：普通周末 → 跳过
+    func testNormalSaturdayIsSkipped() {
+        XCTAssertFalse(ReminderScheduler.isDue(smartReminder, at: at(2026, 9, 26), calendar: calendar))
+    }
+
+    /// 同一个周六，如果它是调休补班日 → 照常提醒
+    func testMakeupSaturdayStillFires() {
+        XCTAssertTrue(ReminderScheduler.isDue(
+            smartReminder,
+            at: at(2026, 9, 26),
+            holidays: [:],
+            makeupWorkdays: ["2026-09-26"],
+            calendar: calendar
+        ))
+    }
+
+    /// 法定节假日即使被标成补班也还是休息日（holidays 优先）
+    func testHolidayWinsOverMakeupFlag() {
+        XCTAssertFalse(ReminderScheduler.isDue(
+            smartReminder,
+            at: at(2026, 10, 1),
+            holidays: ["2026-10-01": "国庆节"],
+            makeupWorkdays: ["2026-10-01"],
+            calendar: calendar
+        ))
+    }
+
+    func testParsesMakeupWorkdaysFromPayload() {
+        let json = """
+        {"code":0,"holiday":{
+          "10-01":{"holiday":true,"name":"国庆节","date":"2026-10-01"},
+          "10-10":{"holiday":false,"name":"国庆节后补班","date":"2026-10-10"},
+          "01-01":{"holiday":true,"name":"元旦","date":"2026-01-01"}}}
+        """
+        let makeup = MarketCalendar.parseMakeupWorkdays(Data(json.utf8))
+
+        XCTAssertEqual(makeup, ["2026-10-10"])
+    }
+
+    func testIsRestDayRules() {
+        // 普通周三 → 工作日
+        XCTAssertFalse(MarketCalendar.isRestDay(at(2026, 9, 23), holidays: [:], calendar: calendar))
+        // 周六 → 休息日
+        XCTAssertTrue(MarketCalendar.isRestDay(at(2026, 9, 26), holidays: [:], calendar: calendar))
+        // 补班的周六 → 工作日
+        XCTAssertFalse(MarketCalendar.isRestDay(
+            at(2026, 9, 26), holidays: [:], makeupWorkdays: ["2026-09-26"], calendar: calendar
+        ))
+        // 法定节假日 → 休息日
+        XCTAssertTrue(MarketCalendar.isRestDay(
+            at(2026, 10, 1), holidays: ["2026-10-01": "国庆节"], calendar: calendar
+        ))
+    }
+
+    func testMakeupWorkdayCacheRoundTrip() throws {
+        let suiteName = "MakeupTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        MarketCalendar.HolidayCache.saveMakeupWorkdays(["2026-10-10"], year: 2026, to: defaults)
+        XCTAssertEqual(MarketCalendar.HolidayCache.loadMakeupWorkdays(year: 2026, from: defaults), ["2026-10-10"])
+        XCTAssertTrue(MarketCalendar.HolidayCache.loadMakeupWorkdays(year: 2027, from: defaults).isEmpty)
+    }
+}

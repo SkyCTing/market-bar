@@ -6,6 +6,7 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
         case daily
         case weekly(weekday: Int)   // 1=周日 … 7=周六（Calendar 的 weekday 约定）
         case monthly(day: Int)      // 1…31，当月没有这一天就跳过
+        case everyDays(interval: Int)  // 每 N 天（从创建那天算起）
 
         var title: String {
             switch self {
@@ -14,6 +15,7 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
                 let names = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
                 return "每\(names.indices.contains(weekday) ? names[weekday] : "周")"
             case .monthly(let day): return "每月\(day)号"
+            case .everyDays(let interval): return "每\(interval)天"
             }
         }
     }
@@ -28,10 +30,12 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
     var repeatRule: Repeat = .daily
     /// 勾上 = 节假日（含周末）不提醒；默认不勾 = 照常提醒
     var skipHolidays: Bool = false
+    /// 「每 N 天」的起算日（yyyy-MM-dd，北京时间）。创建时写入，编辑不重置
+    var anchorDay: String = ""
 
     /// 显式声明键：新增字段后要能兼容旧数据（见文件末尾的 init(from:)）
     enum CodingKeys: String, CodingKey {
-        case id, title, body, hour, minute, second, repeatRule, skipHolidays
+        case id, title, body, hour, minute, second, repeatRule, skipHolidays, anchorDay
     }
 
     var timeText: String { String(format: "%02d:%02d:%02d", hour, minute, second) }
@@ -45,10 +49,13 @@ enum ReminderScheduler {
         _ reminder: Reminder,
         at date: Date,
         holidays: [String: String] = [:],
+        makeupWorkdays: Set<String> = [],
         calendar: Calendar = TradingSession.calendar
     ) -> Bool {
-        // 勾了「节假日不提醒」时，非交易日（周末 + 法定节假日）整天不触发
-        if reminder.skipHolidays, !MarketCalendar.isTradingDay(date, holidays: holidays, calendar: calendar) {
+        // 勾了「智能跳过节假日」时，休息日整天不触发。
+        // 注意用的是 isRestDay 而不是 isTradingDay：**调休补班的周六/周日算工作日**，照常提醒
+        if reminder.skipHolidays,
+           MarketCalendar.isRestDay(date, holidays: holidays, makeupWorkdays: makeupWorkdays, calendar: calendar) {
             return false
         }
 
@@ -64,7 +71,24 @@ enum ReminderScheduler {
             return parts.weekday == weekday
         case .monthly(let day):
             return parts.day == day
+        case .everyDays(let interval):
+            // 锚点缺失时按「该触发」处理，避免因为数据缺字段漏提醒
+            guard let elapsed = daysBetween(reminder.anchorDay, and: date, calendar: calendar) else { return true }
+            return elapsed % max(1, interval) == 0
         }
+    }
+
+    /// 两个「天」之间差几天（按北京时间的日历日算）；锚点为空/非法返回 nil
+    static func daysBetween(_ anchorDay: String, and date: Date, calendar: Calendar = TradingSession.calendar) -> Int? {
+        guard !anchorDay.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TradingSession.timeZone
+        guard let anchor = formatter.date(from: anchorDay) else { return nil }
+
+        let from = calendar.startOfDay(for: anchor)
+        let to = calendar.startOfDay(for: date)
+        return calendar.dateComponents([.day], from: from, to: to).day
     }
 
     /// 去重键：同一条提醒同一分钟只触发一次
@@ -79,6 +103,7 @@ enum ReminderScheduler {
         after date: Date,
         reminder: Reminder,
         holidays: [String: String] = [:],
+        makeupWorkdays: Set<String> = [],
         calendar: Calendar = TradingSession.calendar
     ) -> Date? {
         var components = DateComponents()
@@ -96,6 +121,9 @@ enum ReminderScheduler {
                 continue
             case .monthly(let expected) where dayOfMonth != expected:
                 continue
+            case .everyDays(let interval):
+                guard let elapsed = daysBetween(reminder.anchorDay, and: day, calendar: calendar) else { break }
+                if elapsed % max(1, interval) != 0 { continue }
             default:
                 break
             }
@@ -105,7 +133,8 @@ enum ReminderScheduler {
             components.day = dayOfMonth
             guard let candidate = calendar.date(from: components), candidate > date else { continue }
             // 勾了「节假日不提醒」时，落在非交易日的那次直接跳到下一天再看
-            if reminder.skipHolidays, !MarketCalendar.isTradingDay(candidate, holidays: holidays, calendar: calendar) {
+            if reminder.skipHolidays,
+               MarketCalendar.isRestDay(candidate, holidays: holidays, makeupWorkdays: makeupWorkdays, calendar: calendar) {
                 continue
             }
             return candidate
@@ -175,5 +204,6 @@ extension Reminder {
         )
         second = try container.decodeIfPresent(Int.self, forKey: .second) ?? 0
         skipHolidays = try container.decodeIfPresent(Bool.self, forKey: .skipHolidays) ?? false
+        anchorDay = try container.decodeIfPresent(String.self, forKey: .anchorDay) ?? ""
     }
 }

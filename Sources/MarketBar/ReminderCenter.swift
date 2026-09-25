@@ -38,6 +38,14 @@ final class ReminderCenter {
         )
     }
 
+    /// 调休补班日（这些日子照常提醒）
+    private var makeupWorkdays: Set<String> {
+        MarketCalendar.HolidayCache.loadMakeupWorkdays(
+            year: MarketCalendar.HolidayCache.year(of: Date()),
+            from: .standard
+        )
+    }
+
     /// 精确排程：算出所有提醒里最早的下一次触发时刻，定一个一次性 Timer 到那一刻。
     /// 秒级精度靠这个，轮询做不到（30 秒扫一次最多会晚 30 秒）。
     private func scheduleNext() {
@@ -47,7 +55,7 @@ final class ReminderCenter {
         let now = Date()
         let calendar = TradingSession.calendar
         let next = store.reminders
-            .compactMap { ReminderScheduler.nextFireDate(after: now, reminder: $0, holidays: holidays, calendar: calendar) }
+            .compactMap { ReminderScheduler.nextFireDate(after: now, reminder: $0, holidays: holidays, makeupWorkdays: makeupWorkdays, calendar: calendar) }
             .min()
         // 没有下一条（比如都删了）就不排
         guard let next else { return }
@@ -66,7 +74,7 @@ final class ReminderCenter {
     private func checkDueReminders() {
         let now = Date()
         for reminder in store.reminders
-        where ReminderScheduler.isDue(reminder, at: now, holidays: holidays) {
+        where ReminderScheduler.isDue(reminder, at: now, holidays: holidays, makeupWorkdays: makeupWorkdays) {
             let key = ReminderScheduler.fireKey(reminder, at: now)
             guard !firedKeys.contains(key) else { continue }
             firedKeys.insert(key)

@@ -24,6 +24,38 @@ enum MarketCalendar {
         holidays[TradingSession.dateString(for: date, calendar: calendar)]
     }
 
+    /// 解析 timor.tech 的年接口里的**调休补班日**（`holiday == false`）。
+    /// 补班的周六/周日是上班日，提醒应该照常 —— 这是「智能跳过节假日」的关键一环。
+    static func parseMakeupWorkdays(_ data: Data) -> Set<String> {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = root["holiday"] as? [String: Any] else { return [] }
+
+        var result: Set<String> = []
+        for (_, value) in entries {
+            guard let node = value as? [String: Any],
+                  node["holiday"] as? Bool == false,
+                  let date = node["date"] as? String else { continue }
+            result.insert(date)
+        }
+        return result
+    }
+
+    /// 是不是「休息日」：法定节假日，或「周末且不是调休补班日」。
+    /// 提醒的「智能跳过」用这个判断 —— 补班周末算工作日，提醒照常。
+    static func isRestDay(
+        _ date: Date,
+        holidays: [String: String],
+        makeupWorkdays: Set<String> = [],
+        calendar: Calendar = TradingSession.calendar
+    ) -> Bool {
+        let day = TradingSession.dateString(for: date, calendar: calendar)
+        if holidays[day] != nil { return true }
+        if makeupWorkdays.contains(day) { return false }   // 补班日算工作日
+
+        let weekday = calendar.dateComponents([.weekday], from: date).weekday
+        return weekday == 1 || weekday == 7
+    }
+
     /// 解析 timor.tech 的年接口：只取 `holiday == true`（法定放假）的日期 → 节日名
     static func parseHolidays(_ data: Data) -> [String: String] {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -46,8 +78,18 @@ enum MarketCalendar {
             calendar.dateComponents([.year], from: date).year ?? 0
         }
 
+        static func makeupKey(for year: Int) -> String { "marketMakeupWorkdays-\(year)" }
+
         static func load(year: Int, from defaults: UserDefaults) -> [String: String] {
             defaults.dictionary(forKey: key(for: year)) as? [String: String] ?? [:]
+        }
+
+        static func loadMakeupWorkdays(year: Int, from defaults: UserDefaults) -> Set<String> {
+            Set(defaults.stringArray(forKey: makeupKey(for: year)) ?? [])
+        }
+
+        static func saveMakeupWorkdays(_ days: Set<String>, year: Int, to defaults: UserDefaults) {
+            defaults.set(Array(days), forKey: makeupKey(for: year))
         }
 
         static func save(_ holidays: [String: String], year: Int, to defaults: UserDefaults) {
