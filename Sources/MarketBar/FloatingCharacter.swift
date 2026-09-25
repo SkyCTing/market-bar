@@ -334,20 +334,57 @@ struct FloatingCharacterSpeechBubbleLayout {
     static let size = NSSize(width: 196, height: 68)
     static let spacing: CGFloat = 6
 
-    static func frame(anchor: NSRect, visibleFrame: NSRect) -> (frame: NSRect, pointsDown: Bool) {
+    /// `bottomInset`：头顶被倒计时占了时要往上让多少（见 FloatingCharacterCountdownLayout）
+    static func frame(anchor: NSRect, visibleFrame: NSRect, bottomInset: CGFloat = 0) -> (frame: NSRect, pointsDown: Bool) {
         var origin = NSPoint(
             x: anchor.midX - size.width / 2,
-            y: anchor.maxY + spacing
+            y: anchor.maxY + spacing + bottomInset
         )
         var pointsDown = true
         if origin.y + size.height > visibleFrame.maxY {
-            origin.y = anchor.minY - size.height - spacing
+            origin.y = anchor.minY - size.height - spacing - bottomInset
             pointsDown = false
         }
         origin.x = max(visibleFrame.minX, min(origin.x, visibleFrame.maxX - size.width))
         origin.y = max(visibleFrame.minY, min(origin.y, visibleFrame.maxY - size.height))
         return (NSRect(origin: origin, size: size), pointsDown)
     }
+}
+
+/// 头顶倒计时那块小牌子的几何。
+///
+/// 贴在人物头顶上方（气泡也是这套规矩），顶上实在放不下就翻到脚下，
+/// 免得贴着屏幕顶端时被裁掉。
+struct FloatingCharacterCountdownLayout {
+    static let height: CGFloat = 26
+    static let horizontalPadding: CGFloat = 12
+    static let spacing: CGFloat = 6
+    static let minimumWidth: CGFloat = 68
+
+    /// 等宽数字：秒数每秒都在跳，不等宽的话整块牌子会跟着抖。
+    /// `nonisolated(unsafe)`：NSFont 不是 Sendable，但这个值造出来就不再变，与本仓库其它静态资源同款处理
+    nonisolated(unsafe) static let font = NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
+
+    static func size(for text: String) -> NSSize {
+        let measured = (text as NSString).size(withAttributes: [.font: font]).width
+        return NSSize(
+            width: max(minimumWidth, measured.rounded(.up) + horizontalPadding * 2),
+            height: height
+        )
+    }
+
+    static func frame(anchor: NSRect, size: NSSize, visibleFrame: NSRect) -> NSRect {
+        var origin = NSPoint(x: anchor.midX - size.width / 2, y: anchor.maxY + spacing)
+        if origin.y + size.height > visibleFrame.maxY {
+            origin.y = anchor.minY - size.height - spacing
+        }
+        origin.x = max(visibleFrame.minX, min(origin.x, visibleFrame.maxX - size.width))
+        origin.y = max(visibleFrame.minY, min(origin.y, visibleFrame.maxY - size.height))
+        return NSRect(origin: origin, size: size)
+    }
+
+    /// 倒计时占了头顶多少高度（气泡据此往上让）
+    static var occupiedHeight: CGFloat { height + spacing }
 }
 
 struct FloatingCharacterAmbientMotion {
@@ -550,6 +587,7 @@ final class FloatingCharacterController: NSObject {
     private let panel: FloatingCharacterPanel
     private let characterView: FloatingCharacterView
     private let speechBubbleController: FloatingCharacterSpeechBubbleController
+    private let countdownController = FloatingCharacterCountdownController()
     private var marketReactionDetector = FloatingCharacterMarketReactionDetector()
     private var clickSequence = FloatingCharacterClickSequence()
     private var emotion: FloatingCharacterEmotion = .happy
@@ -774,6 +812,7 @@ final class FloatingCharacterController: NSObject {
             characterView.stopAllAnimations()
             characterView.releaseRenderedAssets()
             speechBubbleController.dismiss()
+            countdownController.dismiss()
             panel.orderOut(nil)
         }
     }
@@ -968,6 +1007,27 @@ final class FloatingCharacterController: NSObject {
         showSpeech(trigger: speechTrigger)
     }
 
+    /// 头顶的倒计时（提醒功能用）。传 nil 收起。
+    ///
+    /// 每秒都会被调一次，所以这里要便宜：没在跑倒计时时直接返回。
+    func updateCountdown(_ text: String?) {
+        guard isVisible else {
+            countdownController.dismiss()
+            return
+        }
+        guard let targetScreen = panel.screen ?? screen(containing: panel.frame) ?? NSScreen.main else { return }
+
+        let wasVisible = countdownController.isVisible
+        countdownController.update(text: text, anchor: panel.frame, visibleFrame: targetScreen.visibleFrame)
+
+        guard wasVisible != countdownController.isVisible else { return }
+        // 头顶多出/少了一块，气泡得跟着让位
+        speechBubbleController.bottomInset = countdownController.isVisible
+            ? FloatingCharacterCountdownLayout.occupiedHeight
+            : 0
+        repositionOverlays()
+    }
+
     /// 让人物说一句**指定的话**（提醒用；showSpeech 的文案是从目录里按触发类型取的）
     func say(_ text: String, duration: TimeInterval = 10) {
         guard isVisible,
@@ -992,6 +1052,19 @@ final class FloatingCharacterController: NSObject {
             visibleFrame: targetScreen.visibleFrame,
             duration: duration
         )
+    }
+
+    /// 头顶那两样（倒计时 + 气泡）一起重新贴到人物上
+    private func repositionOverlays() {
+        repositionCountdown()
+        repositionSpeechBubble()
+    }
+
+    private func repositionCountdown() {
+        guard countdownController.isVisible,
+              let targetScreen = panel.screen ?? screen(containing: panel.frame) ?? NSScreen.main
+        else { return }
+        countdownController.reposition(anchor: panel.frame, visibleFrame: targetScreen.visibleFrame)
     }
 
     private func repositionSpeechBubble() {
@@ -1375,7 +1448,7 @@ final class FloatingCharacterController: NSObject {
                 ?? panel.screen
                 ?? NSScreen.main
             panel.setFrameOrigin(clampedOrigin(requestedOrigin, in: targetScreen?.visibleFrame))
-            repositionSpeechBubble()
+            repositionOverlays()
             updateDockCandidate(at: pointer, screen: targetScreen)
 
         case let .docked(edge):
@@ -1396,7 +1469,7 @@ final class FloatingCharacterController: NSObject {
                 size: panel.frame.size,
                 visibleFrame: visibleFrame
             ))
-            repositionSpeechBubble()
+            repositionOverlays()
         }
     }
 
@@ -1475,7 +1548,7 @@ final class FloatingCharacterController: NSObject {
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self, self.interactionAnimationGeneration == generation else { return }
-                self.repositionSpeechBubble()
+                self.repositionOverlays()
                 self.characterView.playDragLandingAnimation(horizontalVelocity: velocity.x)
                 self.finishDragSettlement(after: FloatingCharacterDragPhysics.landingDuration)
             }
@@ -1558,7 +1631,7 @@ final class FloatingCharacterController: NSObject {
         characterView.presentationMode = .full
         let origin = clampedOrigin(requestedOrigin, size: size, in: targetScreen?.visibleFrame)
         panel.setFrame(NSRect(origin: origin, size: size), display: panel.isVisible)
-        repositionSpeechBubble()
+        repositionOverlays()
         characterView.rebaseDrag(panelOrigin: origin, mouseLocation: pointer)
         motionState = .paused
     }
@@ -1648,7 +1721,7 @@ final class FloatingCharacterController: NSObject {
         if panel.isVisible {
             persistPosition()
         }
-        repositionSpeechBubble()
+        repositionOverlays()
     }
 
     private func screen(containing point: NSPoint) -> NSScreen? {
@@ -1684,6 +1757,9 @@ final class FloatingCharacterPanel: NSPanel {
 final class FloatingCharacterSpeechBubbleController {
     private let panel: FloatingCharacterPanel
     private let bubbleView: FloatingCharacterSpeechBubbleView
+
+    /// 头顶被倒计时占了时，气泡要往上让多少
+    var bottomInset: CGFloat = 0
     nonisolated(unsafe) private var dismissTimer: Timer?
 
     var isVisible: Bool { panel.isVisible }
@@ -1747,7 +1823,8 @@ final class FloatingCharacterSpeechBubbleController {
     private func applyLayout(anchor: NSRect, visibleFrame: NSRect) {
         let layout = FloatingCharacterSpeechBubbleLayout.frame(
             anchor: anchor,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            bottomInset: bottomInset
         )
         bubbleView.pointsDown = layout.pointsDown
         panel.setFrame(layout.frame, display: panel.isVisible)
@@ -1824,6 +1901,114 @@ final class FloatingCharacterSpeechBubbleView: NSView {
         pointsDown
             ? NSRect(x: 1, y: 11, width: bounds.width - 2, height: bounds.height - 12)
             : NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 12)
+    }
+}
+
+/// 头顶的倒计时小牌子：一颗圆角胶囊，里面是等宽数字的剩余时间
+final class FloatingCharacterCountdownView: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    var text: String = "" {
+        didSet { label.stringValue = text }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        label.alignment = .center
+        label.font = FloatingCharacterCountdownLayout.font
+        // 配色跟气泡一套，一眼看出是人物在说话
+        label.textColor = NSColor(calibratedRed: 0.24, green: 0.15, blue: 0.34, alpha: 1)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        // 交给自动布局居中：手写 layout() 在「面板尺寸刚好没变」时不一定被调到，
+        // 那一下标签就还是零尺寸，牌子是空的
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let pill = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 1, dy: 1),
+            xRadius: (bounds.height - 2) / 2,
+            yRadius: (bounds.height - 2) / 2
+        )
+        NSColor(calibratedRed: 1, green: 0.985, blue: 0.95, alpha: 0.97).setFill()
+        pill.fill()
+        NSColor(calibratedRed: 0.48, green: 0.25, blue: 0.68, alpha: 0.9).setStroke()
+        pill.lineWidth = 1.5
+        pill.stroke()
+    }
+}
+
+/// 头顶倒计时的面板（跟着人物走，不接收鼠标事件）
+@MainActor
+final class FloatingCharacterCountdownController {
+    private let panel: FloatingCharacterPanel
+    private let countdownView: FloatingCharacterCountdownView
+
+    var isVisible: Bool { panel.isVisible }
+    var frame: NSRect { panel.frame }
+
+    init() {
+        countdownView = FloatingCharacterCountdownView(
+            frame: NSRect(origin: .zero, size: NSSize(
+                width: FloatingCharacterCountdownLayout.minimumWidth,
+                height: FloatingCharacterCountdownLayout.height
+            ))
+        )
+        panel = FloatingCharacterPanel(
+            contentRect: countdownView.bounds,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = countdownView
+    }
+
+    /// 传 nil 就收起来
+    func update(text: String?, anchor: NSRect, visibleFrame: NSRect) {
+        guard let text else {
+            dismiss()
+            return
+        }
+        let wasVisible = panel.isVisible
+        countdownView.text = text
+        applyLayout(anchor: anchor, visibleFrame: visibleFrame)
+        if !wasVisible { panel.orderFrontRegardless() }
+    }
+
+    func reposition(anchor: NSRect, visibleFrame: NSRect) {
+        guard panel.isVisible else { return }
+        applyLayout(anchor: anchor, visibleFrame: visibleFrame)
+    }
+
+    func dismiss() {
+        panel.orderOut(nil)
+    }
+
+    private func applyLayout(anchor: NSRect, visibleFrame: NSRect) {
+        // 文本长度会变（"9:59" → "10:00"），每帧重新量一下宽度
+        let size = FloatingCharacterCountdownLayout.size(for: countdownView.text)
+        panel.setFrame(
+            FloatingCharacterCountdownLayout.frame(anchor: anchor, size: size, visibleFrame: visibleFrame),
+            display: panel.isVisible
+        )
     }
 }
 

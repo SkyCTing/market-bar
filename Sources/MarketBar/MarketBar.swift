@@ -961,7 +961,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         for reminder in reminderStore.reminders {
             let entry = NSMenuItem(
-                title: reminder.summary,
+                title: menuTitle(for: reminder),
                 action: #selector(editReminder(_:)),
                 keyEquivalent: ""
             )
@@ -991,6 +991,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    /// 菜单里那一行。正在跑的倒计时把剩余时间顶在最前面，一拉开菜单就知道还剩多久
+    /// （菜单每次打开都会重建，所以这个数字是新鲜的）
+    private func menuTitle(for reminder: Reminder) -> String {
+        guard let remaining = ReminderScheduler.remainingText(reminder, at: Date()) else {
+            return reminder.summary
+        }
+        return "\(remaining)  \(reminder.summary)"
+    }
+
     @objc private func addReminder() {
         showReminderDialog(editing: nil)
     }
@@ -1012,12 +1021,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
     }
 
-    /// 添加 / 编辑提醒的对话框：时间（时/分/秒）+ 重复（每天/每周/每月）+ 文案 + 节假日开关
+    /// 添加 / 编辑提醒的对话框：定时（时刻 + 重复）或倒计时（时长 + 循环），
+    /// 外加文案与两种提醒方式（宠物提示 / 弹窗）
     private func showReminderDialog(editing reminder: Reminder?) {
         let alert = NSAlert()
         alert.messageText = reminder == nil ? "添加提醒" : "编辑提醒"
         alert.informativeText = reminder == nil
-            ? "时间精确到秒；勾选「节假日不提醒」后，周末与法定节假日都不会响"
+            ? "定时精确到秒；倒计时会跑在人物头顶上，两种提醒方式可以都勾"
             : "改完点保存；也可以删除这条提醒"
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")

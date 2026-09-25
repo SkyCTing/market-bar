@@ -778,3 +778,80 @@ final class FloatingCharacterTests: XCTestCase {
         FloatingCharacterImageStore.shared.removeAll()
     }
 }
+
+// MARK: - 头顶倒计时的几何
+
+final class FloatingCharacterCountdownLayoutTests: XCTestCase {
+    private let visibleFrame = NSRect(x: 0, y: 0, width: 1_400, height: 900)
+
+    private func anchor(midX: CGFloat = 700, maxY: CGFloat = 500) -> NSRect {
+        NSRect(x: midX - 120, y: maxY - 240, width: 240, height: 240)
+    }
+
+    /// 秒数每秒都在跳，宽度跟着变会让整块牌子左右抖 —— 量出来的宽度必须只跟文本有关
+    func testSizeGrowsWithText() {
+        let short = FloatingCharacterCountdownLayout.size(for: "9:59")
+        let long = FloatingCharacterCountdownLayout.size(for: "1:02:33")
+
+        XCTAssertGreaterThan(long.width, short.width)
+        XCTAssertEqual(short.height, FloatingCharacterCountdownLayout.height)
+    }
+
+    func testSizeHonoursMinimumWidth() {
+        let tiny = FloatingCharacterCountdownLayout.size(for: "1")
+
+        XCTAssertEqual(tiny.width, FloatingCharacterCountdownLayout.minimumWidth)
+    }
+
+    func testFrameSitsAboveTheHeadAndCentred() {
+        let size = FloatingCharacterCountdownLayout.size(for: "25:00")
+        let frame = FloatingCharacterCountdownLayout.frame(anchor: anchor(), size: size, visibleFrame: visibleFrame)
+
+        XCTAssertEqual(frame.midX, 700, accuracy: 0.5)
+        XCTAssertEqual(frame.minY, 500 + FloatingCharacterCountdownLayout.spacing, accuracy: 0.5)
+    }
+
+    /// 贴着屏幕顶端时翻到脚下，而不是被裁掉一半
+    func testFrameFlipsBelowWhenThereIsNoRoomAbove() {
+        let size = FloatingCharacterCountdownLayout.size(for: "25:00")
+        let high = NSRect(x: 580, y: 900 - 240, width: 240, height: 240)
+
+        let frame = FloatingCharacterCountdownLayout.frame(anchor: high, size: size, visibleFrame: visibleFrame)
+
+        XCTAssertLessThan(frame.maxY, high.minY)
+    }
+
+    func testFrameClampsToScreenEdges() {
+        let size = FloatingCharacterCountdownLayout.size(for: "25:00")
+
+        let left = FloatingCharacterCountdownLayout.frame(anchor: anchor(midX: 10), size: size, visibleFrame: visibleFrame)
+        XCTAssertEqual(left.minX, visibleFrame.minX)
+
+        let right = FloatingCharacterCountdownLayout.frame(anchor: anchor(midX: 1_395), size: size, visibleFrame: visibleFrame)
+        XCTAssertEqual(right.maxX, visibleFrame.maxX)
+    }
+
+    func testOccupiedHeightCoversTheWholeOverlay() {
+        XCTAssertEqual(
+            FloatingCharacterCountdownLayout.occupiedHeight,
+            FloatingCharacterCountdownLayout.height + FloatingCharacterCountdownLayout.spacing
+        )
+    }
+
+    /// 头顶被倒计时占了时，气泡要整体上移那么多
+    func testSpeechBubbleMovesUpByTheInset() {
+        let plain = FloatingCharacterSpeechBubbleLayout.frame(anchor: anchor(), visibleFrame: visibleFrame)
+        let shifted = FloatingCharacterSpeechBubbleLayout.frame(
+            anchor: anchor(),
+            visibleFrame: visibleFrame,
+            bottomInset: FloatingCharacterCountdownLayout.occupiedHeight
+        )
+
+        XCTAssertEqual(
+            shifted.frame.minY - plain.frame.minY,
+            FloatingCharacterCountdownLayout.occupiedHeight,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(shifted.pointsDown, plain.pointsDown)
+    }
+}

@@ -2,8 +2,14 @@ import AppKit
 
 /// 提醒的调度与呈现。
 ///
-/// 流程（用户定的「两个都要」）：人物冒气泡说正文 + 响三声 → 60 秒没人理 → 弹置顶模态框
-/// （「知道了」/「10 分钟后再提醒」，顺延最多 6 次，沿用 monthly-reminder.sh 的语义）。
+/// 呈现方式按每条提醒自己勾的 `methods` 走（用户要求两种能各自单开、也能同时开）：
+/// - 只勾「宠物提示」：冒气泡 + 响一声
+/// - 只勾「弹窗」：直接弹置顶模态框
+/// - 两个都勾：先气泡，60 秒没人理再弹（弹窗会阻塞主线程一整轮，能不弹就不弹）
+///
+/// 模态框里的「知道了 / 10 分钟后再提醒」顺延最多 6 次，沿用 monthly-reminder.sh 的语义。
+///
+/// 另外负责倒计时：有倒计时在跑时每秒把剩余时间推给人物显示在头顶。
 @MainActor
 final class ReminderCenter {
     private static let acknowledgeWindow: TimeInterval = 60
@@ -14,6 +20,8 @@ final class ReminderCenter {
     private let characterController: FloatingCharacterController
     private var timer: Timer?
     private var pendingConfirm: Timer?
+    /// 有倒计时在跑时才存在：每秒刷一下头顶那行
+    private var countdownTicker: Timer?
     private var snoozeCounts: [UUID: Int] = [:]
     private var firedKeys: Set<String> = []
 
@@ -57,24 +65,76 @@ final class ReminderCenter {
         let next = store.reminders
             .compactMap { ReminderScheduler.nextFireDate(after: now, reminder: $0, holidays: holidays, makeupWorkdays: makeupWorkdays, calendar: calendar) }
             .min()
-        // 没有下一条（比如都删了）就不排
-        guard let next else { return }
 
         // 提前 0.2 秒唤醒，落到目标秒时判定命中
-        let interval = max(0.2, next.timeIntervalSince(now) - 0.2)
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.checkDueReminders()
-                self?.scheduleNext()
+        if let next {
+            let interval = max(0.2, next.timeIntervalSince(now) - 0.2)
+            timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.checkDueReminders()
+                    self?.scheduleNext()
+                }
             }
+            if let timer { RunLoop.main.add(timer, forMode: .common) }
         }
-        if let timer { RunLoop.main.add(timer, forMode: .common) }
+        // 没有下一条（比如都删了）也要走到这儿：得把倒计时显示刷新掉
+        refreshCountdownDisplay()
+    }
+
+    // MARK: - 倒计时
+
+    /// 正在跑的倒计时里最早到点的那条 —— 头顶只放得下一条
+    var nearestCountdown: Reminder? {
+        store.reminders
+            .compactMap { reminder -> (reminder: Reminder, deadline: Date)? in
+                guard let deadline = ReminderScheduler.countdownDeadline(reminder) else { return nil }
+                return (reminder, deadline)
+            }
+            .min { $0.deadline < $1.deadline }?
+            .reminder
+    }
+
+    /// 头顶那行文本；没有正在跑的倒计时就返回 nil
+    func countdownText(at date: Date = Date()) -> String? {
+        guard let reminder = nearestCountdown,
+              let deadline = ReminderScheduler.countdownDeadline(reminder) else { return nil }
+        return CountdownFormat.remaining(deadline.timeIntervalSince(date))
+    }
+
+    /// 有倒计时在跑就起一个 1 秒的定时器刷头顶；没有就停掉，不留空转的定时器
+    private func refreshCountdownDisplay() {
+        let isRunning = nearestCountdown != nil
+
+        if isRunning, countdownTicker == nil {
+            let ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.publishCountdown() }
+            }
+            RunLoop.main.add(ticker, forMode: .common)
+            countdownTicker = ticker
+        } else if !isRunning {
+            countdownTicker?.invalidate()
+            countdownTicker = nil
+        }
+
+        publishCountdown()
+    }
+
+    private func publishCountdown() {
+        characterController.updateCountdown(countdownText())
     }
 
     private func checkDueReminders() {
         let now = Date()
         for reminder in store.reminders
         where ReminderScheduler.isDue(reminder, at: now, holidays: holidays, makeupWorkdays: makeupWorkdays) {
+            if reminder.kind == .countdown {
+                // 倒计时不靠 fireKey 去重：响完立刻推进状态（停掉或重新起算），
+                // 于是它自然就不再 isDue 了。循环计时每秒一次地去重反而会把 firedKeys 撑爆。
+                store.upsert(ReminderScheduler.afterCountdownFired(reminder, at: now))
+                fire(reminder)
+                continue
+            }
+
             let key = ReminderScheduler.fireKey(reminder, at: now)
             guard !firedKeys.contains(key) else { continue }
             firedKeys.insert(key)
@@ -84,11 +144,26 @@ final class ReminderCenter {
 
     /// 立即提醒（菜单里的「测试」也走这条）
     func fire(_ reminder: Reminder) {
-        NSSound(named: "Sosumi")?.play()
-        characterController.say(reminder.body.isEmpty ? reminder.title : reminder.body)
+        // 兜底：正常存不出「两个都不勾」，但存档里的脏数据不该变成「静默不提醒」
+        let methods = reminder.methods.isEmpty ? Reminder.Methods.bubble : reminder.methods
 
-        // 气泡先提示；60 秒内没被确认再弹模态框
         pendingConfirm?.invalidate()
+        pendingConfirm = nil
+
+        if methods.contains(.bubble) {
+            NSSound(named: "Sosumi")?.play()
+            characterController.say(reminder.body.isEmpty ? reminder.title : reminder.body)
+        }
+
+        guard methods.contains(.alert) else { return }
+
+        // 只勾了弹窗：直接弹（用户就是要被拦住，气泡没必要先飘一下）
+        guard methods.contains(.bubble) else {
+            presentModal(reminder)
+            return
+        }
+
+        // 两个都勾：先给 60 秒让气泡说完，没人理再弹
         pendingConfirm = Timer.scheduledTimer(withTimeInterval: Self.acknowledgeWindow, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in self?.presentModal(reminder) }
         }

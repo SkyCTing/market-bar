@@ -1,7 +1,49 @@
 import Foundation
 
-/// 一条提醒：时间 + 重复规则 + 文案
+/// 一条提醒：定时（某时刻 + 重复规则）或倒计时（从现在起一段时长）+ 文案 + 提醒方式
 struct Reminder: Codable, Equatable, Identifiable, Sendable {
+    /// 触发方式
+    enum Kind: String, Codable, Equatable, Sendable {
+        /// 定时：某个时刻 + 重复规则
+        case scheduled
+        /// 倒计时：从现在起一段时长，跑完在人物头顶显示剩余时间
+        case countdown
+    }
+
+    /// 提醒方式，可多选 —— 用户要求两种能各自单开，也能同时开。
+    struct Methods: OptionSet, Codable, Equatable, Sendable {
+        let rawValue: Int
+
+        /// 宠物冒气泡说出内容 + 响一声
+        static let bubble = Methods(rawValue: 1 << 0)
+        /// 置顶模态框（会阻塞主线程一整轮刷新，能不弹就不弹）
+        static let alert = Methods(rawValue: 1 << 1)
+
+        /// 两个都开 —— 也就是「先气泡，60 秒没人理再弹窗」那条路
+        static let `default`: Methods = [.bubble, .alert]
+
+        var title: String {
+            switch (contains(.bubble), contains(.alert)) {
+            case (true, true): return "宠物提示 + 弹窗"
+            case (true, false): return "宠物提示"
+            case (false, true): return "弹窗"
+            case (false, false): return "不提醒"
+            }
+        }
+
+        init(rawValue: Int) { self.rawValue = rawValue }
+
+        // 存成一个整数，比 {"rawValue": 3} 紧凑，也和 UserDefaults 里的旧数据好相处
+        init(from decoder: Decoder) throws {
+            rawValue = try decoder.singleValueContainer().decode(Int.self)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+    }
+
     enum Repeat: Codable, Equatable, Sendable {
         case daily
         case weekly(weekday: Int)   // 1=周日 … 7=周六（Calendar 的 weekday 约定）
@@ -21,6 +63,7 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
     }
 
     var id: UUID = UUID()
+    var kind: Kind = .scheduled
     var title: String = "提醒"
     var body: String
     var hour: Int
@@ -33,13 +76,70 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
     /// 「每 N 天」的起算日（yyyy-MM-dd，北京时间）。创建时写入，编辑不重置
     var anchorDay: String = ""
 
+    // ── 倒计时专用
+    /// 时长（秒）
+    var countdownSeconds: Int = 0
+    /// 本轮计时的起点。为 nil = 没在跑（一次性倒计时响完就置空）
+    var countdownStartedAt: Date?
+    /// 到点后自动从头再来（番茄钟那种）
+    var repeatsCountdown: Bool = false
+
+    /// 提醒方式
+    var methods: Methods = .default
+
     /// 显式声明键：新增字段后要能兼容旧数据（见文件末尾的 init(from:)）
     enum CodingKeys: String, CodingKey {
-        case id, title, body, hour, minute, second, repeatRule, skipHolidays, anchorDay
+        case id, kind, title, body, hour, minute, second, repeatRule, skipHolidays, anchorDay
+        case countdownSeconds, countdownStartedAt, repeatsCountdown, methods
     }
 
     var timeText: String { String(format: "%02d:%02d:%02d", hour, minute, second) }
-    var summary: String { "\(timeText)  \(repeatRule.title) · \(body)" }
+
+    var summary: String {
+        switch kind {
+        case .scheduled:
+            return "\(timeText)  \(repeatRule.title) · \(body)"
+        case .countdown:
+            // 与定时那条格式对齐：<前缀>  <重复> · <正文>
+            let loop = repeatsCountdown ? "循环" : "一次"
+            return "\(CountdownFormat.duration(countdownSeconds))  \(loop) · \(body)"
+        }
+    }
+}
+
+/// 倒计时的时长格式化（纯函数，好单测）
+enum CountdownFormat {
+    /// 剩余时间："24:59" / "1:02:33" / "1天 02:03:04"
+    ///
+    /// 秒数向上取整：还剩 0.4 秒时显示 "00:01" 而不是 "00:00"，
+    /// 免得「显示 0 了但还没响」这一下让人困惑。
+    static func remaining(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval.rounded(.up)))
+        let days = total / 86_400
+        let hours = (total % 86_400) / 3_600
+        let minutes = (total % 3_600) / 60
+        let seconds = total % 60
+
+        if days > 0 { return String(format: "%d天 %02d:%02d:%02d", days, hours, minutes, seconds) }
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, seconds) }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    /// 时长的人话说法（菜单与摘要用）："25 分钟" / "1 小时 30 分钟" / "45 秒"
+    static func duration(_ seconds: Int) -> String {
+        guard seconds > 0 else { return "0 秒" }
+
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainder = seconds % 60
+
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours) 小时") }
+        if minutes > 0 { parts.append("\(minutes) 分钟") }
+        // 有小时的时候不再报秒，太啰嗦
+        if remainder > 0, hours == 0 { parts.append("\(remainder) 秒") }
+        return parts.joined(separator: " ")
+    }
 }
 
 /// 触发判定：纯逻辑，便于单测
@@ -52,6 +152,12 @@ enum ReminderScheduler {
         makeupWorkdays: Set<String> = [],
         calendar: Calendar = TradingSession.calendar
     ) -> Bool {
+        // 倒计时不看重复规则也不看节假日 —— 它就是「从现在起 N 分钟后叫我」
+        if reminder.kind == .countdown {
+            guard let deadline = countdownDeadline(reminder) else { return false }
+            return date >= deadline
+        }
+
         // 勾了「智能跳过节假日」时，休息日整天不触发。
         // 注意用的是 isRestDay 而不是 isTradingDay：**调休补班的周六/周日算工作日**，照常提醒
         if reminder.skipHolidays,
@@ -76,6 +182,33 @@ enum ReminderScheduler {
             guard let elapsed = daysBetween(reminder.anchorDay, and: date, calendar: calendar) else { return true }
             return elapsed % max(1, interval) == 0
         }
+    }
+
+    // MARK: - 倒计时
+
+    /// 倒计时的到点时刻。没在跑（`startedAt` 为空）或时长为 0 时返回 nil。
+    static func countdownDeadline(_ reminder: Reminder) -> Date? {
+        guard reminder.kind == .countdown,
+              let startedAt = reminder.countdownStartedAt,
+              reminder.countdownSeconds > 0
+        else { return nil }
+        return startedAt.addingTimeInterval(TimeInterval(reminder.countdownSeconds))
+    }
+
+    /// 头顶那行倒计时文本；没有正在跑的倒计时就返回 nil
+    static func remainingText(_ reminder: Reminder, at date: Date) -> String? {
+        guard let deadline = countdownDeadline(reminder) else { return nil }
+        return CountdownFormat.remaining(deadline.timeIntervalSince(date))
+    }
+
+    /// 倒计时响过之后的新状态：勾了循环就从现在重新起算，否则停掉（`startedAt` 置空）。
+    ///
+    /// 重新起算用「实际响的时刻」而不是「原定到点时刻」：app 睡了一觉醒来发现
+    /// 早就过点了的话，用原定时刻会连着补响好几轮。
+    static func afterCountdownFired(_ reminder: Reminder, at date: Date) -> Reminder {
+        var updated = reminder
+        updated.countdownStartedAt = reminder.repeatsCountdown ? date : nil
+        return updated
     }
 
     /// 两个「天」之间差几天（按北京时间的日历日算）；锚点为空/非法返回 nil
@@ -106,6 +239,12 @@ enum ReminderScheduler {
         makeupWorkdays: Set<String> = [],
         calendar: Calendar = TradingSession.calendar
     ) -> Date? {
+        if reminder.kind == .countdown {
+            guard let deadline = countdownDeadline(reminder) else { return nil }
+            // 已经过期就立刻触发（比如 app 关着的时候到点了），返回 date 让上层马上排一次
+            return max(deadline, date)
+        }
+
         var components = DateComponents()
         components.hour = reminder.hour
         components.minute = reminder.minute
@@ -190,7 +329,7 @@ final class ReminderStore {
 
 
 extension Reminder {
-    /// 容忍缺字段的解码：`second` / `skipHolidays` 是后加的，
+    /// 容忍缺字段的解码：`second` / `skipHolidays` / `kind` / `methods` 都是后加的，
     /// 用编译器合成的 init(from:) 遇到旧数据会直接抛 keyNotFound，导致**已有提醒全被清空**。
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -202,8 +341,15 @@ extension Reminder {
             minute: try container.decodeIfPresent(Int.self, forKey: .minute) ?? 0,
             repeatRule: try container.decodeIfPresent(Repeat.self, forKey: .repeatRule) ?? .daily
         )
+        // 旧数据没有 kind —— 一律当定时提醒，行为与升级前完全一致
+        kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .scheduled
         second = try container.decodeIfPresent(Int.self, forKey: .second) ?? 0
         skipHolidays = try container.decodeIfPresent(Bool.self, forKey: .skipHolidays) ?? false
         anchorDay = try container.decodeIfPresent(String.self, forKey: .anchorDay) ?? ""
+        countdownSeconds = try container.decodeIfPresent(Int.self, forKey: .countdownSeconds) ?? 0
+        countdownStartedAt = try container.decodeIfPresent(Date.self, forKey: .countdownStartedAt)
+        repeatsCountdown = try container.decodeIfPresent(Bool.self, forKey: .repeatsCountdown) ?? false
+        // 旧数据没有 methods —— 用默认的「两个都开」，也就是升级前那条路
+        methods = try container.decodeIfPresent(Methods.self, forKey: .methods) ?? .default
     }
 }

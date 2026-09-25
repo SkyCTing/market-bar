@@ -288,3 +288,259 @@ final class ReminderMakeupWorkdayTests: XCTestCase {
         XCTAssertTrue(MarketCalendar.HolidayCache.loadMakeupWorkdays(year: 2027, from: defaults).isEmpty)
     }
 }
+
+// MARK: - 倒计时与提醒方式（第三轮）
+
+final class CountdownFormatTests: XCTestCase {
+    func testRemainingUnderAnHour() {
+        XCTAssertEqual(CountdownFormat.remaining(1_499), "24:59")
+        XCTAssertEqual(CountdownFormat.remaining(60), "01:00")
+        XCTAssertEqual(CountdownFormat.remaining(9), "00:09")
+        XCTAssertEqual(CountdownFormat.remaining(0), "00:00")
+    }
+
+    func testRemainingOverAnHour() {
+        XCTAssertEqual(CountdownFormat.remaining(3_600), "1:00:00")
+        XCTAssertEqual(CountdownFormat.remaining(3_753), "1:02:33")
+    }
+
+    func testRemainingOverADay() {
+        XCTAssertEqual(CountdownFormat.remaining(90_000), "1天 01:00:00")
+    }
+
+    /// 还剩 0.4 秒时显示 00:01 而不是 00:00 —— 「显示 0 了却还没响」很让人困惑
+    func testRemainingRoundsUp() {
+        XCTAssertEqual(CountdownFormat.remaining(0.4), "00:01")
+        XCTAssertEqual(CountdownFormat.remaining(59.2), "01:00")
+    }
+
+    /// app 睡过头时可能算出负数，不能显示成 "-1:-30"
+    func testRemainingClampsNegatives() {
+        XCTAssertEqual(CountdownFormat.remaining(-5), "00:00")
+        XCTAssertEqual(CountdownFormat.remaining(-99_999), "00:00")
+    }
+
+    func testDurationText() {
+        XCTAssertEqual(CountdownFormat.duration(1_500), "25 分钟")
+        XCTAssertEqual(CountdownFormat.duration(45), "45 秒")
+        XCTAssertEqual(CountdownFormat.duration(90), "1 分钟 30 秒")
+        XCTAssertEqual(CountdownFormat.duration(3_600), "1 小时")
+        XCTAssertEqual(CountdownFormat.duration(5_400), "1 小时 30 分钟")
+        XCTAssertEqual(CountdownFormat.duration(0), "0 秒")
+        XCTAssertEqual(CountdownFormat.duration(-5), "0 秒")
+    }
+
+    /// 有小时的时候不再啰嗦到秒
+    func testDurationDropsSecondsOnceThereAreHours() {
+        XCTAssertEqual(CountdownFormat.duration(3_690), "1 小时 1 分钟")
+        XCTAssertEqual(CountdownFormat.duration(3_630), "1 小时", "秒被丢掉，分钟又是 0，就只剩小时")
+    }
+}
+
+final class ReminderCountdownTests: XCTestCase {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func countdown(seconds: Int, repeats: Bool = false) -> Reminder {
+        var reminder = Reminder(title: "泡茶", body: "泡茶", hour: 0, minute: 0)
+        reminder.kind = .countdown
+        reminder.countdownSeconds = seconds
+        reminder.countdownStartedAt = start
+        reminder.repeatsCountdown = repeats
+        return reminder
+    }
+
+    func testDeadlineIsStartPlusDuration() {
+        XCTAssertEqual(
+            ReminderScheduler.countdownDeadline(countdown(seconds: 1_500)),
+            start.addingTimeInterval(1_500)
+        )
+    }
+
+    /// 没在跑就没有到点时刻：一次性倒计时响过之后 startedAt 会被置空
+    func testDeadlineIsNilWhenNotRunning() {
+        var reminder = countdown(seconds: 60)
+        reminder.countdownStartedAt = nil
+
+        XCTAssertNil(ReminderScheduler.countdownDeadline(reminder))
+    }
+
+    func testDeadlineIsNilForScheduledReminders() {
+        let scheduled = Reminder(title: "t", body: "b", hour: 9, minute: 0)
+
+        XCTAssertNil(ReminderScheduler.countdownDeadline(scheduled))
+    }
+
+    func testDeadlineIsNilForZeroDuration() {
+        XCTAssertNil(ReminderScheduler.countdownDeadline(countdown(seconds: 0)))
+    }
+
+    func testIsDueOnlyAfterTheDeadline() {
+        let reminder = countdown(seconds: 600)
+
+        XCTAssertFalse(ReminderScheduler.isDue(reminder, at: start))
+        XCTAssertFalse(ReminderScheduler.isDue(reminder, at: start.addingTimeInterval(599)))
+        XCTAssertTrue(ReminderScheduler.isDue(reminder, at: start.addingTimeInterval(600)))
+        XCTAssertTrue(ReminderScheduler.isDue(reminder, at: start.addingTimeInterval(9_999)), "过期很久也算到点")
+    }
+
+    /// 倒计时不该被重复规则或节假日影响：它就是「从现在起 N 分钟后叫我」
+    func testCountdownIgnoresRepeatRuleAndHolidays() {
+        var reminder = countdown(seconds: 60)
+        reminder.skipHolidays = true
+        reminder.hour = 9
+        reminder.minute = 30
+
+        // 到达时刻是 00:10（start 是整点），跟 hour/minute 完全对不上，仍然要触发
+        XCTAssertTrue(ReminderScheduler.isDue(
+            reminder,
+            at: start.addingTimeInterval(60),
+            holidays: ["2026-09-25": "中秋节"]
+        ))
+    }
+
+    /// 没在跑的倒计时永远不会到点
+    func testNotRunningCountdownIsNeverDue() {
+        var reminder = countdown(seconds: 60)
+        reminder.countdownStartedAt = nil
+
+        XCTAssertFalse(ReminderScheduler.isDue(reminder, at: start.addingTimeInterval(9_999)))
+    }
+
+    func testNextFireDateIsTheDeadline() {
+        let reminder = countdown(seconds: 1_500)
+
+        XCTAssertEqual(
+            ReminderScheduler.nextFireDate(after: start, reminder: reminder),
+            start.addingTimeInterval(1_500)
+        )
+    }
+
+    /// app 关着的时候到点了：重启后要立刻触发，而不是等下一轮
+    func testOverdueCountdownFiresImmediately() {
+        let reminder = countdown(seconds: 60)
+        let later = start.addingTimeInterval(9_999)
+
+        XCTAssertEqual(ReminderScheduler.nextFireDate(after: later, reminder: reminder), later)
+    }
+
+    func testNextFireDateIsNilWhenNotRunning() {
+        var reminder = countdown(seconds: 60)
+        reminder.countdownStartedAt = nil
+
+        XCTAssertNil(ReminderScheduler.nextFireDate(after: start, reminder: reminder))
+    }
+
+    func testRemainingText() {
+        let reminder = countdown(seconds: 1_500)
+
+        XCTAssertEqual(ReminderScheduler.remainingText(reminder, at: start), "25:00")
+        XCTAssertEqual(ReminderScheduler.remainingText(reminder, at: start.addingTimeInterval(60)), "24:00")
+        XCTAssertNil(ReminderScheduler.remainingText(Reminder(title: "t", body: "b", hour: 9, minute: 0), at: start))
+    }
+
+    /// 一次性：响完就停，不再有下一次
+    func testAfterFiringStopsOneShot() {
+        let fired = ReminderScheduler.afterCountdownFired(countdown(seconds: 60), at: start.addingTimeInterval(60))
+
+        XCTAssertNil(fired.countdownStartedAt)
+        XCTAssertNil(ReminderScheduler.countdownDeadline(fired))
+    }
+
+    /// 循环：从现在重新起算
+    func testAfterFiringRestartsLooping() {
+        let fireTime = start.addingTimeInterval(60)
+        let fired = ReminderScheduler.afterCountdownFired(countdown(seconds: 60, repeats: true), at: fireTime)
+
+        XCTAssertEqual(fired.countdownStartedAt, fireTime)
+        XCTAssertEqual(ReminderScheduler.countdownDeadline(fired), fireTime.addingTimeInterval(60))
+    }
+
+    /// 用「实际响的时刻」重新起算：睡了一觉醒来不会连着补响好几轮
+    func testLoopingRestartsFromTheActualFireTime() {
+        let late = start.addingTimeInterval(10_000)
+        let fired = ReminderScheduler.afterCountdownFired(countdown(seconds: 60, repeats: true), at: late)
+
+        XCTAssertEqual(ReminderScheduler.countdownDeadline(fired), late.addingTimeInterval(60))
+        XCTAssertFalse(ReminderScheduler.isDue(fired, at: late), "刚重开的一轮不该立刻又响")
+    }
+
+    func testSummaryShowsDurationAndLoop() {
+        XCTAssertEqual(countdown(seconds: 1_500).summary, "25 分钟  一次 · 泡茶")
+        XCTAssertEqual(countdown(seconds: 1_500, repeats: true).summary, "25 分钟  循环 · 泡茶")
+    }
+
+    func testScheduledSummaryIsUnchanged() {
+        let scheduled = Reminder(title: "t", body: "还信用卡", hour: 9, minute: 58, repeatRule: .monthly(day: 15))
+
+        XCTAssertEqual(scheduled.summary, "09:58:00  每月15号 · 还信用卡")
+    }
+}
+
+final class ReminderMethodsTests: XCTestCase {
+    func testDefaultIsBoth() {
+        XCTAssertEqual(Reminder.Methods.default, [.bubble, .alert])
+    }
+
+    func testTitles() {
+        XCTAssertEqual(Reminder.Methods([.bubble, .alert]).title, "宠物提示 + 弹窗")
+        XCTAssertEqual(Reminder.Methods.bubble.title, "宠物提示")
+        XCTAssertEqual(Reminder.Methods.alert.title, "弹窗")
+        XCTAssertEqual(Reminder.Methods([]).title, "不提醒")
+    }
+
+    func testCodableRoundTrip() throws {
+        for methods in [Reminder.Methods.bubble, .alert, [.bubble, .alert]] as [Reminder.Methods] {
+            var reminder = Reminder(title: "t", body: "b", hour: 9, minute: 0)
+            reminder.methods = methods
+
+            let data = try JSONEncoder().encode(reminder)
+            let decoded = try JSONDecoder().decode(Reminder.self, from: data)
+
+            XCTAssertEqual(decoded.methods, methods)
+        }
+    }
+
+    /// 存成一个整数，不是 {"rawValue": 3}
+    func testEncodesAsASingleValue() throws {
+        var reminder = Reminder(title: "t", body: "b", hour: 9, minute: 0)
+        reminder.methods = [.bubble, .alert]
+
+        let json = String(decoding: try JSONEncoder().encode(reminder), as: UTF8.self)
+
+        XCTAssertTrue(json.contains("\"methods\":3"), "实际是 \(json)")
+    }
+
+    /// 升级上来的旧提醒没有 kind / methods 两个键，必须仍然能解出来，
+    /// 否则合成的解码器会抛 keyNotFound，把用户已有的提醒全清空
+    func testDecodesLegacyReminderWithoutNewKeys() throws {
+        let legacy = """
+        {"id":"11111111-2222-3333-4444-555555555555","title":"还信用卡","body":"还信用卡",
+         "hour":9,"minute":58,"second":0,"repeatRule":{"monthly":{"day":15}},
+         "skipHolidays":false,"anchorDay":"2026-01-01"}
+        """
+
+        let reminder = try JSONDecoder().decode(Reminder.self, from: Data(legacy.utf8))
+
+        XCTAssertEqual(reminder.kind, .scheduled)
+        XCTAssertEqual(reminder.methods, .default, "旧数据升级后行为要和升级前一致")
+        XCTAssertEqual(reminder.countdownSeconds, 0)
+        XCTAssertNil(reminder.countdownStartedAt)
+        XCTAssertFalse(reminder.repeatsCountdown)
+        XCTAssertEqual(reminder.body, "还信用卡")
+    }
+
+    /// 最旧的那版连 second / skipHolidays 都没有
+    func testDecodesVeryOldReminder() throws {
+        let veryOld = """
+        {"id":"11111111-2222-3333-4444-555555555555","title":"t","body":"b",
+         "hour":9,"minute":0,"repeatRule":{"daily":{}}}
+        """
+
+        let reminder = try JSONDecoder().decode(Reminder.self, from: Data(veryOld.utf8))
+
+        XCTAssertEqual(reminder.kind, .scheduled)
+        XCTAssertEqual(reminder.methods, .default)
+        XCTAssertEqual(reminder.second, 0)
+        XCTAssertFalse(reminder.skipHolidays)
+    }
+}
