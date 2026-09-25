@@ -73,7 +73,9 @@ macOS 菜单栏行情与持仓监控：黄金积存金实时价格 + 自选股�
 
 菜单 **「自选配置 → 编辑自选与持仓…」** 打开配置窗口，一张表管两件事：
 
+- **搜索添加**：输入**代码 / 中文名 / 拼音首字母**（`600519`、`贵州茅台`、`gzmt` 都行）即时出候选，↑↓ 选择、回车或点一下加入清单，代码和名称自动填全；已经加过的会标成灰字「已在清单」
 - **名称 / 代码 / 股数** 三列直接编辑；股数留空表示只关注不持仓（如指数）
+- **自动补全**：只填代码，名称会自己补上；只填名称，代码也会补上（重名的标的多，只有候选唯一或名字完全对得上时才敢填，否则留空让你自己搜）
 - **添加 / 删除 / 上移 / 下移** 调整清单与顺序（面板里就是按这个顺序排的）
 - 代码只填 6 位数字会自动补前缀：`6` → `sh`、`0`/`3` → `sz`、`4`/`8` → `bj`
 - 保存前会校验：代码为空、格式不对、重复的代码都会被拦下并指出是第几行
@@ -120,6 +122,7 @@ market-bar/
 │   ├── MarketBar.swift                        # 入口、AppDelegate、状态栏菜单、悬浮面板
 │   ├── WatchlistConfig.swift                  # 自选清单与持仓的配置文件读写
 │   ├── WatchlistDraft.swift                   # 配置页面的表格模型：换算、代码补全、校验（纯逻辑）
+│   ├── StockSearch.swift                      # 标的搜索建议接口（代码/名称/拼音）
 │   ├── WatchlistSettingsWindow.swift          # 「自选与持仓」配置窗口
 │   ├── StockVolume.swift                      # 交易时段进度、量能判定、面板配色
 │   ├── StockHoldings.swift                    # 持仓、当日盈亏与金额格式化
@@ -137,7 +140,7 @@ market-bar/
 │   ├── ChatTranscriptStore.swift              # 历史兜底：app 自己存一份
 │   └── Resources/FloatingCharacter/           # 人物姿态图片
 ├── Artwork/                                   # 浮动人物高清源素材与绿幕源图
-├── Tests/MarketBarTests/                      # 211 条单元测试（XCTest）
+├── Tests/MarketBarTests/                      # 237 条单元测试（XCTest）
 ├── docs/reminders-plan.md                     # 提醒功能的设计说明
 ├── scripts/build-dmg.sh                       # DMG 打包脚本
 └── dist/                                      # 打包产出目录
@@ -184,5 +187,6 @@ bash scripts/build-dmg.sh
 | AI 聊天 | 子进程调用 `claude` CLI，`stream-json` 流式解析，复用同一会话 |
 | 微信未读 | Accessibility API 读状态项（`AXExtrasMenuBar`） |
 | 通知提醒 | 自绘 Toast + 人物气泡 + 置顶模态框 |
+| 标的搜索 | 腾讯 smartbox 建议接口，支持代码/中文名/拼音；名字是 `\uXXXX` 转义，自行还原 |
 | 数据持久化 | UserDefaults（设置、提醒、节假日缓存）+ JSON 配置文件（自选清单） |
 | 并发安全 | Swift 6 Strict Concurrency |

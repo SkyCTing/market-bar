@@ -17,7 +17,7 @@ final class WatchlistSettingsWindow: NSWindow {
 /// 保存前的所有改动都只落在 `draft` 里，点「保存」才回写配置文件 ——
 /// 所以「取消」天然是安全的。
 @MainActor
-final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     /// 校验通过、用户点了保存
     var onSave: ((WatchlistConfig) -> Void)?
     var onCancel: (() -> Void)?
@@ -26,6 +26,9 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
 
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
+    private let searchField = NSSearchField()
+    private let resultsTable = NSTableView()
+    private let resultsScroll = NSScrollView()
     private let messageLabel = NSTextField(labelWithString: "")
     private let addButton = NSButton(title: "添加", target: nil, action: nil)
     private let removeButton = NSButton(title: "删除", target: nil, action: nil)
@@ -35,10 +38,25 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     private let cancelButton = NSButton(title: "取消", target: nil, action: nil)
     private let saveButton = NSButton(title: "保存", target: nil, action: nil)
 
+    /// 搜索候选项（只在内存里，点/回车才加入清单）
+    private var searchResults: [StockSearchResult] = []
+    private var searchTask: Task<Void, Never>?
+    /// 结果列表里高亮的那条，-1 = 没选
+    private var highlightedResult = -1
+    private var resultsHeightConstraint: NSLayoutConstraint?
+    /// 刚被 `refreshCell` 顶掉的那个 field：它随后的 endEditing 要丢掉
+    private weak var suppressedField: NSTextField?
+
     private static let columnTitles = ["名称", "代码", "股数"]
     private static let columnIDs = ["name", "code", "shares"]
     private static let columnWidths: [CGFloat] = [186, 112, 122]
-    private static let hint = "代码填 sh/sz + 6 位数字；只填 6 位数字会自动补前缀。股数留空 = 不持仓。"
+    private static let resultColumnTitles = ["名称", "代码", "备注"]
+    private static let resultColumnIDs = ["rname", "rcode", "rnote"]
+    private static let resultColumnWidths: [CGFloat] = [232, 96, 130]
+    private static let resultRowHeight: CGFloat = 22
+    private static let maximumVisibleResults = 6
+    private static let hint = "输代码 / 名称 / 拼音搜索，点一下加入清单；下面的表格也能直接改，"
+        + "代码只填 6 位数字会自动补前缀，股数留空 = 不持仓。"
 
     init(draft: WatchlistDraft) {
         self.draft = draft
@@ -56,6 +74,7 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     func reload(config: WatchlistConfig) {
         draft = WatchlistDraft(config: config)
         messageLabel.stringValue = ""
+        clearSearch()
         tableView.reloadData()
         refreshButtons()
     }
@@ -68,6 +87,9 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         let hintLabel = NSTextField(labelWithString: Self.hint)
         hintLabel.font = .systemFont(ofSize: 11)
         hintLabel.textColor = .secondaryLabelColor
+        hintLabel.maximumNumberOfLines = 2
+        hintLabel.lineBreakMode = .byWordWrapping
+        hintLabel.preferredMaxLayoutWidth = 548
 
         for (index, identifier) in Self.columnIDs.enumerated() {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
@@ -91,6 +113,34 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .bezelBorder
+
+        // ── 搜索框 + 结果列表
+        searchField.placeholderString = "搜索代码 / 名称 / 拼音，回车或点一下加入清单"
+        searchField.delegate = self
+        searchField.sendsWholeSearchString = false
+        searchField.sendsSearchStringImmediately = false
+
+        for (index, identifier) in Self.resultColumnIDs.enumerated() {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.title = Self.resultColumnTitles[index]
+            column.width = Self.resultColumnWidths[index]
+            column.minWidth = 60
+            resultsTable.addTableColumn(column)
+        }
+        resultsTable.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        resultsTable.dataSource = self
+        resultsTable.delegate = self
+        resultsTable.rowHeight = Self.resultRowHeight
+        resultsTable.headerView = nil          // 就几行候选，表头只是占地方
+        resultsTable.style = .inset
+        resultsTable.allowsEmptySelection = true
+        resultsTable.target = self
+        resultsTable.action = #selector(resultClicked)
+
+        resultsScroll.documentView = resultsTable
+        resultsScroll.hasVerticalScroller = false
+        resultsScroll.borderType = .bezelBorder
+        resultsScroll.isHidden = true          // 没结果时整块收起（NSStackView 会跳过隐藏项）
 
         messageLabel.font = .systemFont(ofSize: 11)
         messageLabel.textColor = .secondaryLabelColor
@@ -126,7 +176,7 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         bottomBar.orientation = .horizontal
         bottomBar.spacing = 8
 
-        let root = NSStackView(views: [hintLabel, scrollView, messageLabel, bottomBar])
+        let root = NSStackView(views: [hintLabel, searchField, resultsScroll, scrollView, messageLabel, bottomBar])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 10
@@ -134,12 +184,25 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
 
         addSubview(root)
 
+        // 结果列表按条数长高，最多露出 6 行，再多就在框里滚
+        let resultsHeight = resultsScroll.heightAnchor.constraint(
+            equalToConstant: Self.resultRowHeight * CGFloat(Self.maximumVisibleResults)
+        )
+        resultsHeight.isActive = true
+        resultsHeightConstraint = resultsHeight
+
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             root.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             root.topAnchor.constraint(equalTo: topAnchor, constant: 14),
             root.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
 
+            hintLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            hintLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            searchField.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            searchField.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            resultsScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            resultsScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             messageLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -164,13 +227,41 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     // MARK: - 表格数据源
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        draft.rows.count
+        tableView === resultsTable ? searchResults.count : draft.rows.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let identifier = tableColumn?.identifier.rawValue, draft.rows.indices.contains(row) else {
-            return nil
+        guard let identifier = tableColumn?.identifier.rawValue else { return nil }
+        return tableView === resultsTable
+            ? resultCell(identifier: identifier, row: row)
+            : editCell(identifier: identifier, row: row)
+    }
+
+    /// 候选行：不可编辑的纯文本（黄色高亮表示已经加过了）
+    private func resultCell(identifier: String, row: Int) -> NSView? {
+        guard searchResults.indices.contains(row) else { return nil }
+        let result = searchResults[row]
+        let already = isAlreadyListed(result.code)
+
+        let text: String
+        switch identifier {
+        case "rname": text = result.name
+        case "rcode": text = result.code
+        default: text = already ? "已在清单" : result.kind
         }
+
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: 12)
+        field.lineBreakMode = .byTruncatingTail
+        field.alignment = identifier == "rcode" ? .right : .left
+        field.textColor = already
+            ? .tertiaryLabelColor
+            : (identifier == "rnote" ? .secondaryLabelColor : .labelColor)
+        return field
+    }
+
+    private func editCell(identifier: String, row: Int) -> NSView? {
+        guard draft.rows.indices.contains(row) else { return nil }
 
         let item = draft.rows[row]
         let field = NSTextField(string: text(for: identifier, row: item))
@@ -198,7 +289,16 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTableView) !== resultsTable else { return }
         refreshButtons()
+    }
+
+    // MARK: - 编辑单元格 → 草稿
+
+    /// 正在编辑的格子上打字时（搜索框走另一条路）
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSSearchField) === searchField else { return }
+        scheduleSearch()
     }
 
     /// 编辑结束（Tab / 回车 / 点别处）就把值收回草稿。
@@ -206,19 +306,34 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     /// 这里刻意**不** `reloadData()`：重建 cell 会打断 Tab 的焦点链，
     /// 所以只把当前 field 的内容改成规范化后的样子。
     func controlTextDidEndEditing(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField else { return }
+        guard let field = notification.object as? NSTextField,
+              field !== searchField
+        else { return }
+
         let row = tableView.row(for: field)
         let identifier = field.identifier?.rawValue ?? ""
+        // 刚被我们主动重画过的那一格，随后会补发一次 endEditing ——
+        // 那时它已经是「没人编辑的空壳」，这一笔必须丢掉
+        if let suppressed = suppressedField, field === suppressed {
+            suppressedField = nil
+            return
+        }
         guard draft.rows.indices.contains(row) else { return }
 
         switch identifier {
         case "name":
             draft.rows[row].name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             field.stringValue = draft.rows[row].name
+            if !draft.rows[row].name.isEmpty, draft.rows[row].code.isEmpty {
+                autoFillCode(forName: draft.rows[row].name)
+            }
         case "code":
             draft.rows[row].code = field.stringValue
             draft.normalizeCode(at: row)
             field.stringValue = draft.rows[row].code
+            if WatchlistDraft.isValidCode(draft.rows[row].code), draft.rows[row].name.isEmpty {
+                autoFillName(forCode: draft.rows[row].code)
+            }
         case "shares":
             draft.rows[row].shares = WatchlistDraft.parseShares(field.stringValue)
             field.stringValue = WatchlistDraft.sharesText(draft.rows[row].shares)
@@ -228,6 +343,209 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
 
         messageLabel.stringValue = ""
         refreshButtons()
+    }
+
+    /// 搜索框里的特殊按键：↑↓ 选候选、回车加入、Esc 清空
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard (control as? NSSearchField) === searchField else { return false }
+
+        switch commandSelector {
+        case #selector(NSResponder.moveDown(_:)):
+            moveHighlight(by: 1)
+            return true
+        case #selector(NSResponder.moveUp(_:)):
+            moveHighlight(by: -1)
+            return true
+        case #selector(NSResponder.insertNewline(_:)):
+            addHighlightedResult()
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            clearSearch()
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: - 搜索
+
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        let keyword = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard keyword.count >= StockSearch.minimumKeywordLength else {
+            showResults([])
+            return
+        }
+
+        searchTask = Task { [weak self] in
+            // 防抖：边打字边搜会把接口打爆，也白白让结果闪
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+
+            let results = await StockSearchService.search(keyword)
+            guard !Task.isCancelled, let self else { return }
+            // 网络回来时用户可能已经改了关键词，对不上就丢掉
+            guard self.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == keyword else {
+                return
+            }
+            self.showResults(results)
+        }
+    }
+
+    private func showResults(_ results: [StockSearchResult]) {
+        searchResults = results
+        highlightedResult = results.isEmpty ? -1 : 0
+        resultsTable.reloadData()
+        resultsTable.selectRowIndexes(
+            results.isEmpty ? IndexSet() : IndexSet(integer: 0),
+            byExtendingSelection: false
+        )
+
+        if results.isEmpty {
+            resultsScroll.isHidden = true
+        } else {
+            resultsScroll.isHidden = false
+            let visible = min(CGFloat(results.count), CGFloat(Self.maximumVisibleResults))
+            resultsHeightConstraint?.constant = Self.resultRowHeight * visible + 4
+        }
+
+        if results.isEmpty, !searchField.stringValue.isEmpty,
+           searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+               .count >= StockSearch.minimumKeywordLength {
+            showMessage("没搜到这个标的", isError: false)
+        } else if !results.isEmpty {
+            messageLabel.stringValue = ""
+        }
+    }
+
+    private func moveHighlight(by offset: Int) {
+        guard !searchResults.isEmpty else { return }
+        let next = min(max(0, highlightedResult + offset), searchResults.count - 1)
+        highlightedResult = next
+        resultsTable.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
+        resultsTable.scrollRowToVisible(next)
+    }
+
+    private func addHighlightedResult() {
+        let index = highlightedResult >= 0 ? highlightedResult : 0
+        guard searchResults.indices.contains(index) else { return }
+        add(searchResults[index])
+    }
+
+    @objc private func resultClicked() {
+        let row = resultsTable.clickedRow
+        guard searchResults.indices.contains(row) else { return }
+        add(searchResults[row])
+    }
+
+    private func add(_ result: StockSearchResult) {
+        guard !isAlreadyListed(result.code) else {
+            showMessage("\(result.name) 已经在清单里了", isError: false)
+            return
+        }
+
+        draft.rows.append(WatchlistRow(code: result.code, name: result.name, shares: nil))
+        tableView.reloadData()
+        let row = draft.rows.count - 1
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
+        // 光标直接落到股数格：代码和名称已经填好了，下一步就是填持仓
+        tableView.editColumn(2, row: row, with: nil, select: true)
+
+        clearSearch()
+        showMessage("已加入 \(result.name)（\(result.code)），点「保存」才生效", isError: false)
+        refreshButtons()
+    }
+
+    private func clearSearch() {
+        searchTask?.cancel()
+        searchField.stringValue = ""
+        showResults([])
+    }
+
+    private func isAlreadyListed(_ code: String) -> Bool {
+        draft.rows.contains { $0.code == code }
+    }
+
+    // MARK: - 单元格自动补全
+
+    /// 代码填完了，把名称补上。
+    ///
+    /// 只有行还在、名称还空着、而且用户没正在改这一格时才写 —— 异步回来时
+    /// 这些前提都可能已经变了。
+    private func autoFillName(forCode code: String) {
+        Task { [weak self] in
+            let results = await StockSearchService.search(code)
+            guard let self,
+                  let match = results.first(where: { $0.code == code }) ?? results.first,
+                  let row = self.draft.rows.firstIndex(where: { $0.code == code && $0.name.isEmpty }),
+                  !self.isEditingWithContent(row: row, identifier: "name")
+            else { return }
+
+            self.draft.rows[row].name = match.name
+            self.refreshCell(row: row, column: 0, identifier: "name")
+        }
+    }
+
+    /// 名称填完了，试着把代码补上。
+    ///
+    /// 挑哪一条由 `StockSearch.bestMatch` 决定：只有一条候选、或者名字完全对得上
+    /// 才敢写，其余宁可空着让用户自己去搜（重名的标的太多了）。
+    private func autoFillCode(forName name: String) {
+        Task { [weak self] in
+            let results = await StockSearchService.search(name)
+            guard let self,
+                  let match = StockSearch.bestMatch(forName: name, in: results),
+                  let row = self.draft.rows.firstIndex(where: { $0.name == name && $0.code.isEmpty }),
+                  !self.isEditingWithContent(row: row, identifier: "code")
+            else { return }
+
+            self.draft.rows[row].code = match.code
+            self.refreshCell(row: row, column: 1, identifier: "code")
+        }
+    }
+
+    /// 这一格正在编辑**且已经打了字** —— 那就别去覆盖用户。
+    ///
+    /// 只看「有没有焦点」是不够的：从名称格 Tab 过来时光标正好落在空的代码格上，
+    /// 那正是要补全的时机；只有格子里已经有内容了才该让路。
+    private func isEditingWithContent(row: Int, identifier: String) -> Bool {
+        guard isEditingCell(row: row, identifier: identifier),
+              let field = (window?.firstResponder as? NSTextView)?.delegate as? NSTextField
+        else { return false }
+        return !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 焦点是不是在这一格上（不管里面有没有内容）
+    private func isEditingCell(row: Int, identifier: String) -> Bool {
+        guard let editor = window?.firstResponder as? NSTextView,
+              let field = editor.delegate as? NSTextField
+        else { return false }
+        return tableView.row(for: field) == row && field.identifier?.rawValue == identifier
+    }
+
+    /// 重画一格。补全回来的值要看得见；如果光标本来就在这格上，
+    /// 重建 cell 之后得把焦点还回去，否则用户打着字光标就没了。
+    private func refreshCell(row: Int, column: Int, identifier: String) {
+        let wasEditing = isEditingCell(row: row, identifier: identifier)
+        // ⚠️ 重画正在编辑的那一格会先结束它的编辑，而 `controlTextDidEndEditing`
+        // 会把那个（已经作废的）field 里的内容写回草稿 —— 正好把我们刚补上的值冲成空。
+        // 所以先把这个 field 记下来，让它随后那一笔被丢掉。
+        if wasEditing { suppressedField = currentEditingField() }
+
+        tableView.reloadData(
+            forRowIndexes: IndexSet(integer: row),
+            columnIndexes: IndexSet(integer: column)
+        )
+
+        if wasEditing {
+            tableView.editColumn(column, row: row, with: nil, select: true)
+        }
+    }
+
+    private func currentEditingField() -> NSTextField? {
+        (window?.firstResponder as? NSTextView)?.delegate as? NSTextField
     }
 
     // MARK: - 按钮
