@@ -619,6 +619,7 @@ final class FloatingCharacterController: NSObject {
     private(set) var sizeOption: FloatingCharacterSizeOption = .defaultOption
     private(set) var presentationMode: FloatingCharacterPresentationMode = .full
     var panelSize: NSSize { panel.frame.size }
+    var anchorFrame: NSRect { panel.frame }
 
     /// 右键人物（参数是屏幕坐标下的 frame）。控制器只负责转发，不认识 AppDelegate 或聊天。
     var onRightClick: ((NSRect) -> Void)?

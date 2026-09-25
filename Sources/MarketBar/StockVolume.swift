@@ -52,13 +52,20 @@ enum TradingSession {
     /// 行情时间戳 `20260923161437` → `2026-09-23`。
     /// 输出与日线日期同格式，可以直接做字符串比较。
     static func sessionDate(fromQuoteTimestamp timestamp: String) -> String? {
-        guard timestamp.count >= 8 else { return nil }
-        let digits = timestamp.prefix(8)
+        let prefix = Array(timestamp.prefix(10))
+        let digits: [Character]
+        if prefix.count == 10, (prefix[4] == "-" || prefix[4] == "/"),
+           prefix[7] == prefix[4] {
+            digits = Array(prefix[0..<4] + prefix[5..<7] + prefix[8..<10])
+        } else {
+            digits = Array(timestamp.prefix(8))
+        }
+        guard digits.count == 8 else { return nil }
         guard digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
 
-        let year = digits.prefix(4)
-        let month = digits.dropFirst(4).prefix(2)
-        let day = digits.dropFirst(6).prefix(2)
+        let year = String(digits.prefix(4))
+        let month = String(digits.dropFirst(4).prefix(2))
+        let day = String(digits.dropFirst(6).prefix(2))
         guard let monthValue = Int(month), let dayValue = Int(day),
               (1...12).contains(monthValue), (1...31).contains(dayValue) else { return nil }
         return "\(year)-\(month)-\(day)"
@@ -88,8 +95,21 @@ enum StockVolume {
     /// 不能取「倒数第二根」：周六看到的日线最后一根是周五（会话日也是周五），
     /// 倒数第二根会错拿成周四。按会话日比较还带来一个好处——今日那根是否已经生成
     /// 都不影响结果，所以日线每个交易日只需拉一次就能缓存一整天。
-    static func previousVolume(from bars: [StockDailyBar], sessionDate: String) -> Double? {
-        bars.last(where: { $0.date < sessionDate })?.volume
+    static func previousVolume(
+        from bars: [StockDailyBar],
+        sessionDate: String,
+        maximumAgeDays: Int? = nil
+    ) -> Double? {
+        guard let previous = bars.last(where: { $0.date < sessionDate }) else { return nil }
+        if let maximumAgeDays {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withFullDate]
+            guard let session = formatter.date(from: sessionDate),
+                  let date = formatter.date(from: previous.date),
+                  let days = Calendar(identifier: .gregorian).dateComponents([.day], from: date, to: session).day,
+                  days <= maximumAgeDays else { return nil }
+        }
+        return previous.volume
     }
 
     /// 量能倍数 = 预估全天量 ÷ 昨日全天量 = (今日累计量 ÷ 进度) ÷ 昨日全天量
@@ -174,7 +194,15 @@ struct StockRow: Sendable {
     /// nil = 没有持仓（如指数），或股数非正
     var shares: Int? { StockHoldings.shares(for: quote.code) }
 
-    /// 当日盈亏（元）；无持仓 / 无行情 / 涨跌额异常时为 nil
+    var displayName: String {
+        switch StockMarket.forCode(quote.code) {
+        case .hongKong: return "\(quote.name) · HK"
+        case .unitedStates: return "\(quote.name) · US"
+        default: return quote.name
+        }
+    }
+
+    /// 当日盈亏（标的当地币种）；无持仓 / 无行情 / 涨跌额异常时为 nil
     var profitLoss: Double? {
         guard showsProfitLoss else { return nil }
         return StockProfitLoss.todayProfit(quote, shares: shares)
@@ -183,7 +211,7 @@ struct StockRow: Sendable {
     /// 每股成本；没设过就是 nil
     var cost: Double? { StockHoldings.cost(for: quote.code) }
 
-    /// 浮动盈亏（元）=（现价 − 成本）× 股数。
+    /// 浮动盈亏（标的当地币种）=（现价 − 成本）× 股数。
     /// 缺成本或缺现价就是 nil —— 不要显示成 0，那和「不赚不亏」分不清
     var floatingProfit: Double? {
         guard let price = quote.numericPrice, let cost, let shares else { return nil }
@@ -192,7 +220,10 @@ struct StockRow: Sendable {
 
     /// 面板单元格文本：无持仓时是**空串**（留白），不是 "--"
     var sharesText: String { shares.map(HoldingFormat.sharesText) ?? "" }
-    var profitLossText: String { profitLoss.map(HoldingFormat.profitLossText) ?? "" }
+    var profitLossText: String {
+        guard let profitLoss else { return "" }
+        return currencyPrefix + HoldingFormat.profitLossText(profitLoss)
+    }
     var costText: String { HoldingFormat.cost(cost) }
 
     /// 浮动收益率 =（现价 − 成本）÷ 成本。只要成本与现价，与股数无关
@@ -203,7 +234,13 @@ struct StockRow: Sendable {
 
     /// 面板那一格：「金额  收益率%」。缺成本或缺持仓就是空串（留白），不是 "--"
     var floatingProfitText: String {
-        HoldingFormat.floatingProfit(profit: floatingProfit, percent: floatingProfitPercent)
+        let formatted = HoldingFormat.floatingProfit(profit: floatingProfit, percent: floatingProfitPercent)
+        return formatted.isEmpty ? "" : currencyPrefix + formatted
+    }
+
+    private var currencyPrefix: String {
+        guard let market = StockMarket.forCode(quote.code), market != .mainland else { return "" }
+        return "\(market.currency) "
     }
 }
 

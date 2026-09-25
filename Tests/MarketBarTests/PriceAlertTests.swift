@@ -110,6 +110,13 @@ final class PriceAlertEvaluatorTests: XCTestCase {
         XCTAssertEqual(stock.displayMessage(price: 45.678), "招行到价了", "自定义优先")
     }
 
+    func testOverseasPriceAlertsIdentifyTheirCurrency() {
+        let us = PriceAlert(target: .stock(code: "usAAPL"), direction: .above, threshold: 300)
+        let hk = PriceAlert(target: .stock(code: "hk00700"), direction: .below, threshold: 400)
+        XCTAssertEqual(PriceAlert.defaultMessage(for: us, price: 338.35), "usAAPL: 338.35 USD")
+        XCTAssertEqual(hk.summary(displayName: "腾讯控股"), "📉 腾讯控股 ≤ 400.00 HKD")
+    }
+
     func testDefaultMessageForGold() {
         let gold = PriceAlert(target: .gold, direction: .above, threshold: 900)
 

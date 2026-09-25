@@ -343,7 +343,17 @@ final class GoldPriceService: Sendable {
             let fields = rest[rest.startIndex..<bodyEnd].components(separatedBy: "~")
 
             // 字段不足或内容错位（无效代码只会返回 v_pv_none_match="1"）时跳过
-            guard fields.count > 32, fields[2].hasSuffix(entry.code.suffix(6)) else { continue }
+            guard fields.count > 32,
+                  let market = StockMarket.forCode(entry.code) else { continue }
+            let quotedCode = fields[2]
+            let matches: Bool
+            switch market {
+            case .mainland, .hongKong:
+                matches = quotedCode == String(entry.code.dropFirst(2))
+            case .unitedStates:
+                matches = StockMarket.usSymbol(from: quotedCode) == String(entry.code.dropFirst(2))
+            }
+            guard matches else { continue }
 
             // 成交量和交易日要在「价格为 0 就占位」那道 guard 之前取：
             // 否则停牌行的 sessionDate 为空，日线缓存的键就永远是空的，永远不会去拉。
@@ -351,7 +361,7 @@ final class GoldPriceService: Sendable {
             let sessionDate = TradingSession.sessionDate(fromQuoteTimestamp: fields[30]) ?? ""
 
             // 停牌、未开盘或数据异常时价格是 0.000 / 空，回落到 "--" 占位
-            guard let price = Double(fields[3]), price > 0 else {
+            guard let price = Double(fields[3]), price.isFinite, price > 0 else {
                 quotes[entry.code] = .placeholder(
                     code: entry.code,
                     name: entry.name,
@@ -396,8 +406,7 @@ final class GoldPriceService: Sendable {
     private static let dailyBarsBase = "https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param="
 
     static func dailyBarsURL(code: String, days: Int = 5) -> URL? {
-        // 代码来自写死的清单，仍然校验一次，免得手误把垃圾参数打出去
-        guard code.range(of: "^(sh|sz)[0-9]{6}$", options: .regularExpression) != nil else { return nil }
+        guard WatchlistDraft.isValidCode(code) else { return nil }
         return URL(string: "\(dailyBarsBase)\(code),day,,,\(days)")
     }
 
@@ -554,6 +563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let reminderStore = ReminderStore()
     private lazy var reminderCenter = ReminderCenter(
         store: reminderStore,
+        priceAlertStore: priceAlertStore,
         characterController: floatingCharacterController
     )
 
@@ -622,6 +632,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let controller = chatController ?? ClaudeChatController()
         chatController = controller
         controller.toggle(anchor: anchor)
+    }
+
+    @objc private func askAIAboutMarket() {
+        let controller = chatController ?? ClaudeChatController()
+        chatController = controller
+        let quotes = StockWatchlist.entries.map { entry in
+            currentStockQuotes[entry.code] ?? .placeholder(code: entry.code, name: entry.name)
+        }
+        controller.showDraft(
+            MarketSnapshotPrompt.make(
+                goldPrice: currentPrice,
+                quotes: quotes,
+                fetchedAt: lastUpdateTime
+            ),
+            anchor: floatingCharacterController.anchorFrame
+        )
     }
 
     /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
@@ -851,6 +877,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(makeWatchlistMenuItem())
         menu.addItem(makeReminderMenuItem())
+        let aiItem = NSMenuItem(title: "问 AI：当前行情…", action: #selector(askAIAboutMarket), keyEquivalent: "")
+        aiItem.target = self
+        menu.addItem(aiItem)
         menu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -1429,10 +1458,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             stocks: StockWatchlist.entries.map { entry in
                 let quote = currentStockQuotes[entry.code]
                     ?? .placeholder(code: entry.code, name: entry.name)
+                let market = StockMarket.forCode(entry.code) ?? .mainland
+                let showProfit = market == .mainland
+                    ? showsTodayProfit
+                    : market.showsTodayProfit(at: Date(), quoteDate: quote.sessionDate)
                 return StockRow(
                     quote: quote,
                     volumeRatio: stockVolumeRatio(for: quote),
-                    showsProfitLoss: showsTodayProfit
+                    showsProfitLoss: showProfit
                 )
             },
             unread: unreadCounts
@@ -1512,15 +1545,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 报价时间戳属于今天 ⟹ 今天确实有场次在跑 → 用实时进度折算；
         // 否则报价停留在上一场（周末 / 盘前 / 节假日）→ 进度按 1.0，直接显示那一场的收盘倍数。
         // 这个不对称是刻意的：冻结场景传 1.0，开盘 15 分钟的宽限就不会把上一场的收盘倍数也压掉。
-        let progress = quote.sessionDate == TradingSession.dateString(for: Date())
-            ? TradingSession.progress(at: Date())
+        let market = StockMarket.forCode(quote.code) ?? .mainland
+        let progress = quote.sessionDate == market.dateString(for: Date())
+            ? market.progress(at: Date())
             : 1.0
 
         return StockVolume.ratio(
             todayVolume: quote.volume,
             previousVolume: StockVolume.previousVolume(
                 from: dailyBars[quote.code] ?? [],
-                sessionDate: quote.sessionDate
+                sessionDate: quote.sessionDate,
+                maximumAgeDays: market == .mainland ? nil : 10
             ),
             progress: progress
         )
@@ -1580,15 +1615,15 @@ final class HoverPanel {
     // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
     // 数值列宽度按实测的最宽内容定：股数 "1,100,000" 55.6pt、现价 "3936.52  -0.39%" 93.6pt、
     // 盈亏 "-1,234,567" 62.5pt；名称列吃剩余宽度（最宽 129.9pt）。
-    static let panelWidth: CGFloat = 650
+    static let panelWidth: CGFloat = 780
     static let padding: CGFloat = 16
     static let columnGap: CGFloat = 8
     static let volumeColumnWidth: CGFloat = 74
     static let sharesColumnWidth: CGFloat = 58
     static let costColumnWidth: CGFloat = 56
     static let priceColumnWidth: CGFloat = 96
-    static let profitColumnWidth: CGFloat = 64
-    static let floatingColumnWidth: CGFloat = 116
+    static let profitColumnWidth: CGFloat = 110
+    static let floatingColumnWidth: CGFloat = 174
     /// 名称列吃剩余宽度。列多了之后这列变窄，加列时记得一起调 panelWidth
     static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 6
         - volumeColumnWidth - sharesColumnWidth - costColumnWidth
@@ -1756,7 +1791,7 @@ final class HoverPanel {
 
             // 名称单独一列；倍数与「放量/缩量」各占一列，这样数字才能竖向对齐
             let tl = makeStockTitleLabel()
-            tl.stringValue = quote.name
+            tl.stringValue = row.displayName
 
             let volumeLabel = makeStockCell(
                 StockVolume.volumeText(row.volumeRatio),
@@ -2026,7 +2061,7 @@ final class HoverPanel {
             stockValueLabels[quote.code]?.stringValue =
                 formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
             stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
-            stockTitleLabels[quote.code]?.stringValue = quote.name
+            stockTitleLabels[quote.code]?.stringValue = row.displayName
             weChatBadge?.update(data.unread.weChat)
         weChatSecondBadge?.update(data.unread.weChatSecond)
 

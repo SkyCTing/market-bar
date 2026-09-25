@@ -27,13 +27,18 @@ final class ReminderCenter {
     private var snoozeCounts: [UUID: Int] = [:]
     private var firedKeys: Set<String> = []
 
-    init(store: ReminderStore, characterController: FloatingCharacterController) {
+    init(
+        store: ReminderStore,
+        priceAlertStore: PriceAlertStore? = nil,
+        characterController: FloatingCharacterController
+    ) {
         self.store = store
         self.characterController = characterController
         self.presenter = AlertPresenter(characterController: characterController)
-        // 顺延回来之前确认这条定时提醒还在
-        presenter.stillValid = { [weak store] id in
-            store?.reminders.contains(where: { $0.id == id }) ?? false
+        // 顺延回来之前确认对应的定时或价格提醒还在
+        presenter.stillValid = { [weak store, weak priceAlertStore] id in
+            store?.reminders.contains(where: { $0.id == id }) == true
+                || priceAlertStore?.alerts.contains(where: { $0.id == id }) == true
         }
         // 模态框会阻塞主线程一整轮，期间到点的提醒原来就永远丢了 —— 关掉之后补响
         presenter.onModalFinished = { [weak self] startedAt, finishedAt in
@@ -49,13 +54,17 @@ final class ReminderCenter {
             in: store.reminders,
             between: start,
             and: end,
+            firedKeys: firedKeys,
             holidays: holidays,
             makeupWorkdays: makeupWorkdays
         )
         guard !missed.isEmpty else { return }
 
+        for (reminder, fireDate) in missed {
+            firedKeys.insert(ReminderScheduler.fireKey(reminder, at: fireDate))
+        }
         Task { @MainActor [weak self] in
-            for reminder in missed {
+            for (reminder, _) in missed {
                 guard let self, self.store.reminders.contains(where: { $0.id == reminder.id }) else { continue }
                 self.fire(reminder)
             }

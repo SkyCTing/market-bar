@@ -21,7 +21,8 @@ final class StockQuoteParsingTests: XCTestCase {
         price: String,
         raiseValue: String,
         percent: String,
-        volume: String = "0"
+        volume: String = "0",
+        timestamp: String = "20260923161437"
     ) -> String {
         var fields = [String](repeating: "0", count: 40)
         fields[1] = "某只标的"  // 名称字段含中文，用来验证 GBK 字节不会破坏后续解析
@@ -30,7 +31,7 @@ final class StockQuoteParsingTests: XCTestCase {
         fields[4] = "0.348"
         fields[5] = "0.348"
         fields[6] = volume
-        fields[30] = "20260923161437"
+        fields[30] = timestamp
         fields[31] = raiseValue
         fields[32] = percent
         return "v_\(code)=\"" + fields.joined(separator: "~") + "\";\n"
@@ -121,6 +122,48 @@ final class StockQuoteParsingTests: XCTestCase {
         XCTAssertEqual(quote.sessionDate, "2026-09-23")
     }
 
+    func testParsesHongKongAndUnitedStatesQuotesWithoutMixingSymbols() throws {
+        let hk = StockWatchlist.Entry(code: "hk00700", name: "腾讯控股")
+        let us = StockWatchlist.Entry(code: "usBRK.B", name: "伯克希尔B")
+        let data = payload(
+            record(code: "hk00700", bareCode: "00700", price: "436.600", raiseValue: "-1.8",
+                   percent: "-0.41", volume: "9113746", timestamp: "2026/09/25 16:08:20"),
+            record(code: "usBRK.B", bareCode: "BRK.B.N", price: "504.34", raiseValue: "3.12",
+                   percent: "0.62", volume: "990479", timestamp: "2026-09-25 11:49:40")
+        )
+        let quotes = GoldPriceService.parseStockQuotes(data, watchlist: [hk, us])
+
+        XCTAssertEqual(quotes["hk00700"]?.sessionDate, "2026-09-25")
+        XCTAssertEqual(quotes["hk00700"]?.price, "436.600")
+        XCTAssertEqual(quotes["usBRK.B"]?.sessionDate, "2026-09-25")
+        XCTAssertEqual(quotes["usBRK.B"]?.raisePercent ?? 0, 0.0062, accuracy: 1e-9)
+        XCTAssertEqual(quotes["usBRK.B"]?.volume, 990_479)
+        XCTAssertTrue(GoldPriceService.parseStockQuotes(
+            payload(record(code: "usBRK.B", bareCode: "BRK.A.N", price: "504.34",
+                           raiseValue: "3", percent: "0.6")),
+            watchlist: [us]
+        ).isEmpty)
+    }
+
+    func testLiveCrossMarketQuotesWhenRequested() async throws {
+        guard ProcessInfo.processInfo.environment["MARKETBAR_LIVE_QUOTES"] == "1" else {
+            throw XCTSkip("Set MARKETBAR_LIVE_QUOTES=1 to check the public quote endpoint")
+        }
+        let entries = [
+            StockWatchlist.Entry(code: "sh600036", name: "招商银行"),
+            StockWatchlist.Entry(code: "hk00700", name: "腾讯控股"),
+            StockWatchlist.Entry(code: "usAAPL", name: "苹果"),
+        ]
+        let quotes = await GoldPriceService().fetchStockQuotes(
+            codes: entries.map(\.code), fallback: entries
+        )
+        for entry in entries {
+            let quote = try XCTUnwrap(quotes[entry.code], "接口未返回 \(entry.code)")
+            XCTAssertNotNil(quote.numericPrice, "\(entry.code) 无有效价格")
+            XCTAssertFalse(quote.sessionDate.isEmpty, "\(entry.code) 无有效交易日期")
+        }
+    }
+
     // MARK: - 日线解析（取昨日全天量用）
 
     private func klinePayload(code: String, key: String = "day", rows: [[Any]]) -> Data {
@@ -180,6 +223,9 @@ final class StockQuoteParsingTests: XCTestCase {
         XCTAssertNil(GoldPriceService.dailyBarsURL(code: "512170"))
         XCTAssertNil(GoldPriceService.dailyBarsURL(code: "sh51217"))
         XCTAssertNil(GoldPriceService.dailyBarsURL(code: "sh512170&x=1"))
+        XCTAssertNotNil(GoldPriceService.dailyBarsURL(code: "hk00700"))
+        XCTAssertNotNil(GoldPriceService.dailyBarsURL(code: "usBRK.B"))
+        XCTAssertNil(GoldPriceService.dailyBarsURL(code: "usAAPL&x=1"))
     }
 
     /// 清单里写死的 URL 必须带上全部代码，且用逗号拼接。

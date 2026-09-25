@@ -54,8 +54,8 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     private static let resultColumnWidths: [CGFloat] = [232, 96, 130]
     private static let resultRowHeight: CGFloat = 22
     private static let maximumVisibleResults = 6
-    private static let hint = "在上面搜代码 / 名称 / 拼音加入清单（这是唯一的加行方式）；"
-        + "下面的表格能改名称、代码与股数 —— 只填 6 位数字会自动补前缀，股数留空 = 不持仓。"
+    private static let hint = "搜名称 / 代码 / 拼音添加沪深北、港股或美股；"
+        + "代码可填 600036 / 00700 / AAPL，股数留空 = 不持仓；外盘成本和盈亏以当地币种计。"
 
     init(draft: WatchlistDraft) {
         self.draft = draft

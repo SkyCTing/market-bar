@@ -216,29 +216,42 @@ enum ReminderScheduler {
     /// 用来兜住「模态框阻塞主线程」：`runModal` 期间不会排下一次定时器，
     /// 这期间到点的提醒原来就永远丢了。
     ///
-    /// 判定方式：`start` 之后的下一次触发时刻 ≤ `now`。
-    /// 今天已经响过的不在此列 —— 它的下一次在明天，自然 > now。
+    /// 判定方式：`start` 附近的下一次未响过的触发时刻 ≤ `now`。
+    /// 返回原定时刻，方便调用方立即记录去重键，避免补响再被下一次弹窗重复补响。
     static func missedScheduled(
         in reminders: [Reminder],
         between start: Date,
         and now: Date,
+        firedKeys: Set<String> = [],
         holidays: [String: String] = [:],
         makeupWorkdays: Set<String> = [],
         calendar: Calendar = TradingSession.calendar
-    ) -> [Reminder] {
+    ) -> [(reminder: Reminder, fireDate: Date)] {
         guard now > start else { return [] }
 
-        return reminders.filter { reminder in
-            guard reminder.kind == .scheduled else { return false }
+        return reminders.compactMap { reminder in
+            guard reminder.kind == .scheduled else { return nil }
             // 往前挪 1 秒，把「正好落在 start 那一刻」也算进来
-            guard let next = nextFireDate(
+            var next = nextFireDate(
                 after: start.addingTimeInterval(-1),
                 reminder: reminder,
                 holidays: holidays,
                 makeupWorkdays: makeupWorkdays,
                 calendar: calendar
-            ) else { return false }
-            return next <= now
+            )
+            while let candidate = next, candidate <= now {
+                if !firedKeys.contains(fireKey(reminder, at: candidate, calendar: calendar)) {
+                    return (reminder, candidate)
+                }
+                next = nextFireDate(
+                    after: candidate,
+                    reminder: reminder,
+                    holidays: holidays,
+                    makeupWorkdays: makeupWorkdays,
+                    calendar: calendar
+                )
+            }
+            return nil
         }
     }
 

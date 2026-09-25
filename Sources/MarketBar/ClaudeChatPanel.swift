@@ -181,6 +181,12 @@ final class ClaudeChatView: NSView {
     var inputResponder: NSView { input }
     var isTranscriptEmpty: Bool { transcript.string.isEmpty }
 
+    func insertDraft(_ text: String) {
+        input.string += (input.string.isEmpty ? "" : "\n\n") + text
+        inputDidChange()
+        focusInput()
+    }
+
     // MARK: 流式渲染（思考 + 正文边生成边显示）
 
     /// 开始一次流式：记住尾部起点，之后的增量都替换这一段
@@ -273,7 +279,7 @@ final class ClaudeChatView: NSView {
         input.drawsBackground = false
         input.backgroundColor = .clear
         input.textContainerInset = NSSize(width: 0, height: 6)
-        input.isVerticallyResizable = false
+        input.isVerticallyResizable = true
         input.isHorizontallyResizable = false
         input.autoresizingMask = [.width]
         input.textContainer?.widthTracksTextView = true
@@ -295,7 +301,8 @@ final class ClaudeChatView: NSView {
         addSubview(inputPlaceholder)
 
         inputScroll.documentView = input
-        inputScroll.hasVerticalScroller = false
+        inputScroll.hasVerticalScroller = true
+        inputScroll.autohidesScrollers = true
         inputScroll.drawsBackground = false
         inputScroll.contentView.drawsBackground = false
 
@@ -413,6 +420,7 @@ final class ClaudeChatView: NSView {
     fileprivate func inputDidChange() {
         inputPlaceholder.isHidden = !input.string.isEmpty
         updateInputHeight()
+        needsLayout = true
     }
 
     private func updateInputHeight() {
@@ -429,10 +437,20 @@ final class ClaudeChatView: NSView {
     override func layout() {
         super.layout()
 
-        // 输入框的 documentView 必须显式给 frame：只加约束的话它是零尺寸，
-        // 文字和占位符都画不出来（不影响转写区，那个是 verticallyResizable 会自己长）
+        // 长行情草稿比 110pt 的输入框高，documentView 得能长高才能向上滚动审阅。
         if inputScroll.contentSize.width > 0 {
-            input.frame = NSRect(origin: .zero, size: inputScroll.contentSize)
+            let textHeight = (input.string as NSString).boundingRect(
+                with: NSSize(width: inputScroll.contentSize.width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: Self.bodyFont]
+            ).height + input.textContainerInset.height * 2
+            input.frame = NSRect(
+                origin: .zero,
+                size: NSSize(
+                    width: inputScroll.contentSize.width,
+                    height: max(inputScroll.contentSize.height, ceil(textHeight))
+                )
+            )
             input.textContainer?.containerSize = NSSize(
                 width: inputScroll.contentSize.width,
                 height: .greatestFiniteMagnitude

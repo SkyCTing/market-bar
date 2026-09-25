@@ -114,7 +114,7 @@ struct WatchlistDraft: Equatable {
                 issues.append(Issue(
                     kind: .malformedCode,
                     row: index,
-                    message: "第 \(display) 行：\(row.code) 不是有效代码，应为 sh/sz/bj + 6 位数字，如 sh600036"
+                    message: "第 \(display) 行：\(row.code) 不是有效代码（如 sh600036、hk00700、usAAPL）"
                 ))
                 continue
             }
@@ -136,12 +136,29 @@ struct WatchlistDraft: Equatable {
 
     /// 把用户输的代码补全成腾讯行情要的形式。
     ///
-    /// 只输 6 位数字时按首位补前缀：`6` → 沪市、`0`/`3` → 深市、`4`/`8` → 北交所。
+    /// 6 位数字按首位补沪深北，5 位数字补港股；美股代码转成 `usAAPL`。
     /// 认不出来的原样返回，交给 `issues()` 去报错。
     static func normalizeCode(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !trimmed.isEmpty, !isValidCode(trimmed) else { return trimmed }
-        guard trimmed.count == 6, trimmed.allSatisfy(isASCIIDigit) else { return trimmed }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        guard !trimmed.isEmpty else { return trimmed }
+        if trimmed.hasPrefix("us") {
+            let code = "us" + StockMarket.usSymbol(from: String(trimmed.dropFirst(2)))
+            return isValidCode(code) ? code : trimmed
+        }
+        if lower.hasPrefix("hk"), trimmed.dropFirst(2).first?.isNumber == true {
+            return "hk" + String(trimmed.dropFirst(2))
+        }
+        if (lower.hasPrefix("sh") || lower.hasPrefix("sz") || lower.hasPrefix("bj")),
+           trimmed.dropFirst(2).first?.isNumber == true {
+            return lower
+        }
+        if trimmed.count == 5, trimmed.allSatisfy(isASCIIDigit) { return "hk" + trimmed }
+        if !trimmed.allSatisfy(isASCIIDigit) {
+            let code = "us" + StockMarket.usSymbol(from: trimmed)
+            return isValidCode(code) ? code : trimmed
+        }
+        guard trimmed.count == 6 else { return trimmed }
 
         // ⚠️ 1 / 5 开头的是基金与 ETF（app 自带清单里 16 只有 4 只是这种），
         // 漏了它们的话，用户按提示只打 6 位数字会被判成非法代码，保存直接被拦。
@@ -158,9 +175,20 @@ struct WatchlistDraft: Equatable {
     }
 
     static func isValidCode(_ code: String) -> Bool {
-        guard code.count == 8 else { return false }
-        guard ["sh", "sz", "bj"].contains(String(code.prefix(2))) else { return false }
-        return code.dropFirst(2).allSatisfy(isASCIIDigit)
+        let symbol = code.dropFirst(2)
+        switch String(code.prefix(2)) {
+        case "sh", "sz", "bj":
+            return symbol.count == 6 && symbol.allSatisfy(isASCIIDigit)
+        case "hk":
+            return symbol.count == 5 && symbol.allSatisfy(isASCIIDigit)
+        case "us":
+            return (1...10).contains(symbol.count)
+                && symbol.first?.isASCII == true && symbol.first?.isLetter == true
+                && StockMarket.usSymbol(from: String(symbol)) == String(symbol)
+                && symbol.allSatisfy { ($0.isASCII && $0.isUppercase && $0.isLetter)
+                    || isASCIIDigit($0) || $0 == "." || $0 == "-" }
+        default: return false
+        }
     }
 
     /// 股数文本 → 股数。空串、非数字、负数都当作「没持仓」。
