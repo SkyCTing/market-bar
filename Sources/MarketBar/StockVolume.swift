@@ -202,6 +202,20 @@ struct StockRow: Sendable {
         }
     }
 
+    func displayName(at date: Date, holidays: [String: String] = [:]) -> String {
+        let badge = QuoteFreshness.evaluate(quote, at: date, holidays: holidays).badge
+        return badge.isEmpty ? displayName : "\(badge) · \(displayName)"
+    }
+
+    func quoteTooltip(at date: Date, holidays: [String: String] = [:]) -> String {
+        let freshness = QuoteFreshness.evaluate(quote, at: date, holidays: holidays)
+        guard let market = StockMarket.forCode(quote.code) else {
+            return "\(quote.name) (\(quote.code))\n未知市场：无法核对报价时间"
+        }
+        let time = quote.quotedAt.map(market.formattedQuoteTime) ?? "未知"
+        return "\(quote.name) (\(quote.code))\n报价时间：\(time)（\(market.timeZoneName)）\n\(freshness.explanation)"
+    }
+
     /// 当日盈亏（标的当地币种）；无持仓 / 无行情 / 涨跌额异常时为 nil
     var profitLoss: Double? {
         guard showsProfitLoss else { return nil }
