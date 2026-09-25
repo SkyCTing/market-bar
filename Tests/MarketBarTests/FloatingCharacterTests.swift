@@ -855,3 +855,77 @@ final class FloatingCharacterCountdownLayoutTests: XCTestCase {
         XCTAssertEqual(shifted.pointsDown, plain.pointsDown)
     }
 }
+
+// MARK: - 未读徽标的位置
+
+/// 徽标曾经被画到人物**脚边**：约束求解用的是以左上角为原点的翻转空间，
+/// `.centerY == 0.76 × .bottom` 实际是「距顶 76%」。这条实测落点，别再踩回去。
+@MainActor
+final class FloatingCharacterBadgeLayoutTests: XCTestCase {
+    private func laidOutBadge(in size: CGFloat) -> NSView {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        let badge = NSView()
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(badge)
+        NSLayoutConstraint.activate([
+            NSLayoutConstraint(
+                item: badge, attribute: .centerX, relatedBy: .equal,
+                toItem: container, attribute: .trailing,
+                multiplier: FloatingCharacterBadgeLayout.mainCenterX, constant: 0
+            ),
+            NSLayoutConstraint(
+                item: badge, attribute: .centerY, relatedBy: .equal,
+                toItem: container, attribute: .bottom,
+                multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
+            ),
+            badge.widthAnchor.constraint(equalToConstant: 22),
+            badge.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        container.layoutSubtreeIfNeeded()
+        return badge
+    }
+
+    /// 非翻转坐标里 y 从**底边**起算，人物是头朝上的：徽标得落在上半部分
+    func testBadgeSitsNearTheHeadNotTheFeet() {
+        for size in [160.0, 240.0, 320.0] {
+            let badge = laidOutBadge(in: size)
+            let fromBottom = badge.frame.midY / size
+
+            XCTAssertEqual(fromBottom, FloatingCharacterBadgeLayout.centerYFromBottom, accuracy: 0.01,
+                           "\(Int(size)) 档位的徽标位置不对")
+            XCTAssertGreaterThan(fromBottom, 0.6, "\(Int(size)) 档位的徽标跑到脚边去了")
+        }
+    }
+
+    /// 横向不受翻转影响：0.30 / 0.70 就是左 / 右
+    func testBadgeSitsOnTheCorrectSideHorizontally() {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let left = NSView()
+        let right = NSView()
+        for (index, badge) in [left, right].enumerated() {
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(badge)
+            NSLayoutConstraint.activate([
+                NSLayoutConstraint(
+                    item: badge, attribute: .centerX, relatedBy: .equal,
+                    toItem: container, attribute: .trailing,
+                    multiplier: index == 0
+                        ? FloatingCharacterBadgeLayout.mainCenterX
+                        : FloatingCharacterBadgeLayout.secondCenterX,
+                    constant: 0
+                ),
+                NSLayoutConstraint(
+                    item: badge, attribute: .centerY, relatedBy: .equal,
+                    toItem: container, attribute: .bottom,
+                    multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
+                ),
+                badge.widthAnchor.constraint(equalToConstant: 22),
+                badge.heightAnchor.constraint(equalToConstant: 22),
+            ])
+        }
+        container.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(left.frame.midX, 60, accuracy: 0.5, "左＝主微信")
+        XCTAssertEqual(right.frame.midX, 140, accuracy: 0.5, "右＝微信小号")
+    }
+}

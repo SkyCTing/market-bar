@@ -136,10 +136,16 @@ struct WatchlistDraft: Equatable {
         guard !trimmed.isEmpty, !isValidCode(trimmed) else { return trimmed }
         guard trimmed.count == 6, trimmed.allSatisfy(isASCIIDigit) else { return trimmed }
 
+        // ⚠️ 1 / 5 开头的是基金与 ETF（app 自带清单里 16 只有 4 只是这种），
+        // 漏了它们的话，用户按提示只打 6 位数字会被判成非法代码，保存直接被拦。
+        // 9 开头故意不猜：900xxx 是沪市 B 股、920xxx 是北交所，得用户自己写前缀。
         switch trimmed.first {
-        case "6": return "sh" + trimmed
-        case "0", "3": return "sz" + trimmed
-        case "4", "8": return "bj" + trimmed
+        case "6": return "sh" + trimmed   // 沪市 A 股（含科创板 688）
+        case "5": return "sh" + trimmed   // 沪市基金 / ETF
+        case "0", "3": return "sz" + trimmed   // 深市 A 股 / 创业板
+        case "1": return "sz" + trimmed   // 深市基金 / ETF
+        case "2": return "sz" + trimmed   // 深市 B 股
+        case "4", "8": return "bj" + trimmed   // 北交所
         default: return trimmed
         }
     }

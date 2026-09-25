@@ -294,17 +294,33 @@ final class ReminderStore {
         reload()
     }
 
+    /// 逐条解码：数组里某一条解不出来（类型不符、或是更高版本写出的新值）时
+    /// **只丢那一条**，不能让整份列表归零 —— 归零之后任何一次 save() 都会把空表
+    /// 写回 UserDefaults，用户其余提醒就永久没了（有测试钉住这条）。
+    private struct LossyReminder: Decodable {
+        let value: Reminder?
+        init(from decoder: Decoder) throws {
+            value = try? Reminder(from: decoder)
+        }
+    }
+
     func reload() {
-        guard let data = defaults.data(forKey: Self.key),
-              let decoded = try? JSONDecoder().decode([Reminder].self, from: data) else {
-            reminders = []
+        guard let data = defaults.data(forKey: Self.key) else {
+            reminders = []      // 这个键本来就没有 = 用户没有提醒
             return
         }
-        reminders = decoded
+        guard let decoded = try? JSONDecoder().decode([LossyReminder].self, from: data) else {
+            // 连数组都解不出来（整个键被写坏）—— 保持内存里现有的，别清空。
+            // 之后再存一次就会把好的那份写回去，相当于自愈
+            return
+        }
+        reminders = decoded.compactMap(\.value)
     }
 
     func save() {
-        defaults.set(try? JSONEncoder().encode(reminders), forKey: Self.key)
+        // 编码失败时绝不能 set(nil)：那会把整个 key 删掉，等于清空所有提醒
+        guard let data = try? JSONEncoder().encode(reminders) else { return }
+        defaults.set(data, forKey: Self.key)
     }
 
     func upsert(_ reminder: Reminder) {

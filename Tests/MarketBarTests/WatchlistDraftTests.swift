@@ -84,6 +84,42 @@ final class WatchlistDraftTests: XCTestCase {
         XCTAssertEqual(WatchlistDraft.normalizeCode("430047"), "bj430047")
     }
 
+    /// ⚠️ 这条本该一开始就有：默认清单里 16 只有 4 只是 ETF（1 / 5 开头），
+    /// 前缀表漏掉那两个号段的话，用户按提示只打 6 位数字会被判成非法代码、保存直接被拦。
+    /// 逐只走一遍，任何号段再漏都会立刻红。
+    func testEveryDefaultCodeCanBeTypedAsSixDigits() {
+        // 000001 同时是上证指数（sh）和平安银行（sz），补前缀只能给一个 —— 真歧义，不算漏
+        let ambiguous = ["sh000001"]
+
+        for item in WatchlistConfig.default.watchlist {
+            let bare = String(item.code.dropFirst(2))
+            let normalized = WatchlistDraft.normalizeCode(bare)
+
+            if ambiguous.contains(item.code) {
+                XCTAssertTrue(WatchlistDraft.isValidCode(normalized), "\(bare) 至少要补成一个合法代码")
+                continue
+            }
+            XCTAssertEqual(
+                normalized,
+                item.code,
+                "\(item.name)（\(item.code)）只打 \(bare) 补不出前缀"
+            )
+        }
+    }
+
+    /// 基金 / ETF 的号段（app 自带清单里就有）
+    func testNormalizeCodeCoversFundAndEtfRanges() {
+        XCTAssertEqual(WatchlistDraft.normalizeCode("512170"), "sh512170", "沪市 ETF")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("159813"), "sz159813", "深市 ETF")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("200011"), "sz200011", "深市 B 股")
+    }
+
+    /// 9 开头故意不猜：900xxx 是沪市 B 股、920xxx 是北交所，猜错不如让用户自己写
+    func testNormalizeCodeDoesNotGuessTheNinthRange() {
+        XCTAssertEqual(WatchlistDraft.normalizeCode("900901"), "900901")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("920099"), "920099")
+    }
+
     func testNormalizeCodeLeavesUsableInputAlone() {
         XCTAssertEqual(WatchlistDraft.normalizeCode("SH600036"), "sh600036", "前缀大小写不敏感")
         XCTAssertEqual(WatchlistDraft.normalizeCode("  sh600036  "), "sh600036", "两侧空格要吃掉")

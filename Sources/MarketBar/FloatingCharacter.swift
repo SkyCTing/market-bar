@@ -342,7 +342,9 @@ struct FloatingCharacterSpeechBubbleLayout {
         )
         var pointsDown = true
         if origin.y + size.height > visibleFrame.maxY {
-            origin.y = anchor.minY - size.height - spacing - bottomInset
+            // 翻到脚下时**不加** inset：倒计时在头顶，脚下不用让位，
+            // 减掉它只会把气泡再往下推 32pt，和人物之间凭空多一段空档
+            origin.y = anchor.minY - size.height - spacing
             pointsDown = false
         }
         origin.x = max(visibleFrame.minX, min(origin.x, visibleFrame.maxX - size.width))
@@ -385,6 +387,23 @@ struct FloatingCharacterCountdownLayout {
 
     /// 倒计时占了头顶多少高度（气泡据此往上让）
     static var occupiedHeight: CGFloat { height + spacing }
+}
+
+/// 未读徽标在人物视图里的相对位置。
+///
+/// ⚠️ 坑：约束求解用的是**以左上角为原点**的翻转空间，`.bottom` 那一路取到的是
+/// 「离顶边多远」。所以「离底边 76%（头两侧）」必须写成 `1 - 0.76 = 0.24`；
+/// 直接写 0.76 会把徽标画到脚边。横向的 `.trailing` 不受影响，所以只有 Y 会错，
+/// 更不容易发现。`FloatingCharacterBadgeLayoutTests` 实测落点把这条钉住。
+enum FloatingCharacterBadgeLayout {
+    /// 徽标中心离**底边**多远（0…1）。0.76 ≈ 头两侧
+    static let centerYFromBottom: CGFloat = 0.76
+    /// 两颗徽标各自的中心 X（占视图宽的比例）
+    static let mainCenterX: CGFloat = 0.30
+    static let secondCenterX: CGFloat = 0.70
+
+    /// 喂给 `.centerY == multiplier × .bottom` 的乘数
+    static var centerYMultiplier: CGFloat { 1 - centerYFromBottom }
 }
 
 struct FloatingCharacterAmbientMotion {
@@ -697,11 +716,13 @@ final class FloatingCharacterController: NSObject {
             ),
             NSLayoutConstraint(
                 item: mainBadge, attribute: .centerY, relatedBy: .equal,
-                toItem: characterView, attribute: .bottom, multiplier: 0.76, constant: 0
+                toItem: characterView, attribute: .bottom,
+                multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
             ),
             NSLayoutConstraint(
                 item: secondBadge, attribute: .centerY, relatedBy: .equal,
-                toItem: characterView, attribute: .bottom, multiplier: 0.76, constant: 0
+                toItem: characterView, attribute: .bottom,
+                multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
             ),
         ])
         characterView.onDragBegan = { [weak self] in
@@ -1019,6 +1040,9 @@ final class FloatingCharacterController: NSObject {
     func updateCountdown(_ text: String?) {
         guard isVisible else {
             countdownController.dismiss()
+            // 让位状态也要一起归零：否则「倒计时在人物隐藏期间结束」会让
+            // bottomInset 永远停在 32，下次显示人物时气泡凭空高出一截
+            resetSpeechBubbleInset()
             return
         }
         guard let targetScreen = panel.screen ?? screen(containing: panel.frame) ?? NSScreen.main else { return }
@@ -1028,9 +1052,7 @@ final class FloatingCharacterController: NSObject {
 
         guard wasVisible != countdownController.isVisible else { return }
         // 头顶多出/少了一块，气泡得跟着让位
-        speechBubbleController.bottomInset = countdownController.isVisible
-            ? FloatingCharacterCountdownLayout.occupiedHeight
-            : 0
+        resetSpeechBubbleInset()
         repositionOverlays()
     }
 
@@ -1063,6 +1085,14 @@ final class FloatingCharacterController: NSObject {
     /// 头顶那两样（倒计时 + 气泡）一起重新贴到人物上
     private func repositionOverlays() {
         repositionCountdown()
+        repositionSpeechBubble()
+    }
+
+    /// 按「头顶有没有倒计时」重算气泡的让位高度
+    private func resetSpeechBubbleInset() {
+        let inset = countdownController.isVisible ? FloatingCharacterCountdownLayout.occupiedHeight : 0
+        guard speechBubbleController.bottomInset != inset else { return }
+        speechBubbleController.bottomInset = inset
         repositionSpeechBubble()
     }
 

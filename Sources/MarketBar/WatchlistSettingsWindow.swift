@@ -481,7 +481,10 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         Task { [weak self] in
             let results = await StockSearchService.search(code)
             guard let self,
-                  let match = results.first(where: { $0.code == code }) ?? results.first,
+                  // 只认精确命中的那条：搜索本身已经证明了这个代码存不存在，
+                  // 退而取第一条等于替用户「猜」了一个，会把无关标的的名字填进来
+                  // （比如把 sz600036 填成「招商银行」，而 sz600036 根本不存在）
+                  let match = results.first(where: { $0.code == code }),
                   let row = self.draft.rows.firstIndex(where: { $0.code == code && $0.name.isEmpty }),
                   !self.isEditingWithContent(row: row, identifier: "name")
             else { return }

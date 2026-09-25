@@ -597,3 +597,66 @@ final class ReminderAcknowledgeOptionTests: XCTestCase {
         XCTAssertEqual(center.acknowledgeWindow, 10)
     }
 }
+
+
+// MARK: - 一条坏数据不能拖垮整份提醒列表
+
+final class ReminderStoreRobustnessTests: XCTestCase {
+    @MainActor
+    private func store(_ suite: String) throws -> (ReminderStore, UserDefaults) {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        return (ReminderStore(defaults: defaults), defaults)
+    }
+
+    /// ⚠️ 回归：以前是整份数组 `try? decode`，一条坏字段 → 内存里变空表 →
+    /// 之后任何一次 save() 都把空表写回去，用户其余提醒永久丢失（实测过）。
+    /// 现在逐条解码，只丢坏的那条。
+    @MainActor
+    func testOneBadEntryDoesNotWipeTheOthers() throws {
+        let suite = "ReminderRobust.\(UUID().uuidString)"
+        let (_, defaults) = try store(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let raw = """
+        [{"id":"11111111-2222-3333-4444-555555555555","title":"好1","body":"好1","hour":9,"minute":0,"repeatRule":{"daily":{}}},
+         {"id":"22222222-2222-3333-4444-555555555555","title":"坏","body":"坏","hour":"九点","minute":0,"repeatRule":{"daily":{}}},
+         {"id":"33333333-2222-3333-4444-555555555555","title":"好2","body":"好2","hour":10,"minute":0,"repeatRule":{"daily":{}}}]
+        """
+        defaults.set(Data(raw.utf8), forKey: "reminders")
+
+        let store = ReminderStore(defaults: defaults)
+        XCTAssertEqual(store.reminders.map(\.body), ["好1", "好2"], "只该丢坏的那条")
+
+        // 再做一次写操作，好的那两条必须还在
+        store.upsert(Reminder(title: "新", body: "新", hour: 8, minute: 0))
+
+        let reread = ReminderStore(defaults: defaults)
+        XCTAssertEqual(reread.reminders.map(\.body).sorted(), ["好1", "好2", "新"])
+    }
+
+    /// 整个键被写坏（连数组都解不出）时，保持内存里现有的，别清空
+    @MainActor
+    func testCompletelyBrokenPayloadKeepsExistingReminders() throws {
+        let suite = "ReminderRobust.\(UUID().uuidString)"
+        let (store, defaults) = try store(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        store.upsert(Reminder(title: "保住我", body: "保住我", hour: 9, minute: 0))
+        defaults.set(Data("不是 json".utf8), forKey: "reminders")
+
+        store.reload()
+
+        XCTAssertEqual(store.reminders.map(\.body), ["保住我"], "解不出来时不该把内存清空")
+    }
+
+    @MainActor
+    func testMissingKeyMeansNoReminders() throws {
+        let suite = "ReminderRobust.\(UUID().uuidString)"
+        let (store, defaults) = try store(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        store.reload()
+
+        XCTAssertTrue(store.reminders.isEmpty)
+    }
+}

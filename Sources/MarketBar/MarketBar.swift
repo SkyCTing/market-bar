@@ -299,13 +299,21 @@ final class GoldPriceService: Sendable {
 
     /// 拉取 `StockWatchlist` 里所有标的的行情。返回的字典可能缺项（接口没返回该代码、
     /// 或该标的停牌），缺的项由调用方回落到 `StockQuote.placeholder`。
-    func fetchStockQuotes() async -> [String: StockQuote] {
-        var request = URLRequest(url: StockWatchlist.url)
+    /// ⚠️ 清单必须由调用方**在主线程取好快照**再传进来。
+    ///
+    /// 这个方法体跑在协作线程池上（`async let` 起的），而 `StockWatchlist.entries`
+    /// 是主线程可随时改写的全局变量（保存配置就改），在后台直接读它是真实的数据竞争 ——
+    /// 最坏情况下读到正在释放的数组缓冲，拼出的 URL 会让 `URL(string:)!` 崩掉。
+    func fetchStockQuotes(codes: [String], fallback: [StockWatchlist.Entry]) async -> [String: StockQuote] {
+        guard let url = URL(string: "https://qt.gtimg.cn/q=" + codes.joined(separator: ",")) else {
+            return [:]
+        }
+        var request = URLRequest(url: url)
         request.timeoutInterval = 5
 
         do {
             let (data, _) = try await session.data(for: request)
-            return Self.parseStockQuotes(data, watchlist: StockWatchlist.entries)
+            return Self.parseStockQuotes(data, watchlist: fallback)
         } catch {
             return [:]
         }
@@ -641,7 +649,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 而 isFetching 会把这段时间的刷新全部丢掉。
         async let priceTask = service.fetchPriceInfo(for: selectedProvider)
         async let marketTask = service.fetchMarketData(currentGoldPrice: currentPrice)
-        async let stockTask = service.fetchStockQuotes()
+        // 在主线程上取快照：后台那条任务绝不能直接读 StockWatchlist 的全局状态
+        let watchlistCodes = StockWatchlist.codes
+        let watchlistEntries = StockWatchlist.entries
+        async let stockTask = service.fetchStockQuotes(codes: watchlistCodes, fallback: watchlistEntries)
 
         let info = await priceTask
         currentPriceInfo = info

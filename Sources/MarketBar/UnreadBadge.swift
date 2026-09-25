@@ -117,6 +117,11 @@ final class UnreadCountBadgeView: NSView {
         onClick?()
     }
 
+    /// 抬起事件必须在这里吃掉。徽标中央被内部的数字标签盖住，标签不处理 mouseUp 时会
+    /// 顺着响应链抛给人物视图 —— 于是点一次徽标 = 开微信 **+** 人物说话换姿势，
+    /// 还会计进连击状态机（3 秒内点 4 次，人物就躲到牌子后面去了）。
+    override func mouseUp(with event: NSEvent) {}
+
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
         wantsLayer = true
