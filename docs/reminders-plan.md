@@ -108,3 +108,40 @@ enum ReminderScheduler {
 
 - ⚠️ **改完代码重新安装 app 后，辅助功能授权会失效**（签名变化）—— 见项目记忆 `marketbar-permissions`。提醒功能本身不需要辅助功能权限，但微信未读徽标需要，重装后要提醒用户重新授权
 - 模态框会阻塞整轮刷新，`runModal` 前后各记一条日志便于排查
+
+---
+
+# 第二轮改进（用户 2026-09-25 提出，待做）
+
+## 1. 时间精确到秒
+
+- `Reminder` 加 `second: Int = 0`；`timeText` 变 `HH:mm:ss`
+- `ReminderScheduler.isDue` 比较到秒；`fireKey` 也带上秒（同秒只触发一次）
+- ⚠️ **扫描间隔要改**：现在 30 秒扫一次，做不到秒级。改成 `nextFireDate` 计算的**精确排程**（定一个 Timer 到那个时刻），每次触发/配置变更后重排下一次
+- UI 的时间输入换成 `NSDatePicker`（`datePickerElements = .hourMinuteSecond`）
+
+## 2. 配置界面人性化
+
+现在是把「每天 / 每周日…每周六 / 每月1号…每月31号」共 39 项塞进一个 `NSPopUpButton`，太糙。改成：
+
+- 时间：`NSDatePicker`（时/分/秒）
+- 重复：`NSPopUpButton` 只有三项 —— **每天 / 每周 / 每月**
+- 选「每周」时，**下面才出现**一个「周几」的星期选择器（7 个分段控件或第二个 popup）
+- 选「每月」时，**下面才出现**一个「几号」的输入（1–31，或 popup）
+- 文案：一个输入框
+- 用一个自定义 `NSView` 做 accessory view，按上面结构手动布局（参考现有 `showPriceInputDialog` 与价格提醒对话框的写法）
+
+## 3.「智能跳过节假日」开关
+
+- `Reminder` 加 `skipHolidays: Bool = false`
+- 勾选后，触发前先查节假日（**已有现成数据**：`MarketCalendar.HolidayCache.load(year:to:)` + `MarketCalendar.isTradingDay`，每天自动拉一次）
+- **待确认的行为**：撞上节假日时是
+  - (a) **直接跳过**（当天不提醒），还是
+  - (b) **顺延到下一个交易日/工作日**再提醒（比如「每月 15 号还信用卡」撞上周六 → 周一提醒）
+  → 实现前先问用户；建议默认 (b)，更符合「还信用卡」这类场景
+- 这个开关同样受用于周末：勾选后周末也不提醒
+
+## 验证补充
+
+- 秒级：设一条「1 分钟 10 秒后」的提醒，确认误差在 1 秒内
+- 节假日：把系统日期临时改到某个法定节假日（或用注入的 holidays 字典写单测），确认跳过/顺延符合预期
