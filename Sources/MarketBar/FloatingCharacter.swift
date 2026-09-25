@@ -610,6 +610,12 @@ final class FloatingCharacterController: NSObject {
     /// 右键人物（参数是屏幕坐标下的 frame）。控制器只负责转发，不认识 AppDelegate 或聊天。
     var onRightClick: ((NSRect) -> Void)?
 
+    /// 拖到屏幕边缘时直接收起（而不是贴边偷看）。默认关，由 AppDelegate 注入。
+    var hidesAtEdge = false
+
+    /// 被「拖到边缘」自动收起时通知一声 —— AppDelegate 得把菜单里的勾选同步掉
+    var onAutoHidden: (() -> Void)?
+
     /// 人物右上角的未读徽标：左＝主微信、右＝微信小号；点一下打开对应聊天框
     private let mainBadge = UnreadCountBadgeView()
     private let secondBadge = UnreadCountBadgeView()
@@ -1497,9 +1503,16 @@ final class FloatingCharacterController: NSObject {
                 FloatingCharacterDockLayout.edge(for: pointer, in: $0.visibleFrame)
             }
             if let edge, let targetScreen {
-                enterDockedMode(edge: edge, screen: targetScreen)
                 pendingDockEdge = nil
                 pendingDockScreen = nil
+                // 开了「拖到边缘自动隐藏」就把人收起来（用户要的一键隐藏），
+                // 而不是贴边偷看；想再见到它走菜单「浮动窗口 → 显示人物」
+                if hidesAtEdge {
+                    setVisible(false)
+                    onAutoHidden?()
+                    return
+                }
+                enterDockedMode(edge: edge, screen: targetScreen)
                 return
             }
         }

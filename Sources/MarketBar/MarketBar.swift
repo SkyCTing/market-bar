@@ -556,6 +556,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isMenuOpen = false
     private var isFloatingCharacterVisible = true
     private var floatingCharacterSize: FloatingCharacterSizeOption = .defaultOption
+    /// 拖到屏幕边缘时直接收起（默认关，需要时在菜单「浮动窗口」里打开）
+    private var hidesFloatingCharacterAtEdge = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -576,6 +578,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderCenter.start()
         floatingCharacterController.onRightClick = { [weak self] anchor in
             self?.showChat(anchor: anchor)
+        }
+        floatingCharacterController.hidesAtEdge = hidesFloatingCharacterAtEdge
+        floatingCharacterController.onAutoHidden = { [weak self] in
+            guard let self else { return }
+            self.isFloatingCharacterVisible = false
+            // 人都藏起来了，聊天窗也别留着（和菜单里的「显示人物」一个处理）
+            self.chatController?.close()
+            self.saveSettings()
+            self.rebuildMenu()
         }
         refreshHolidaysIfNeeded()
         Task {
@@ -853,6 +864,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         visibilityItem.state = isFloatingCharacterVisible ? .on : .off
         floatingWindowSubmenu.addItem(visibilityItem)
 
+        let hideAtEdgeItem = NSMenuItem(
+            title: "拖到边缘自动隐藏",
+            action: #selector(toggleHideAtEdge),
+            keyEquivalent: ""
+        )
+        hideAtEdgeItem.target = self
+        hideAtEdgeItem.state = hidesFloatingCharacterAtEdge ? .on : .off
+        floatingWindowSubmenu.addItem(hideAtEdgeItem)
+
         let sizeItem = NSMenuItem(title: "调整大小", action: nil, keyEquivalent: "")
         let sizeSubmenu = NSMenu(title: "调整大小")
         for option in FloatingCharacterSizeOption.allCases {
@@ -1065,6 +1085,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderCenter.fire(sample)
     }
 
+    /// 拖到边缘自动隐藏的开关：打开后拖到屏幕左右边缘直接收起人物，
+    /// 想再见到它走上面的「显示人物」
+    @objc private func toggleHideAtEdge() {
+        hidesFloatingCharacterAtEdge.toggle()
+        floatingCharacterController.hidesAtEdge = hidesFloatingCharacterAtEdge
+        rebuildMenu()
+        saveSettings()
+    }
+
     @objc private func clearReminders() {
         reminderStore.removeAll()
         reminderCenter.reload()
@@ -1261,6 +1290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let floatingCharacterVisible = "floatingCharacterVisible"
         static let floatingCharacterSize = "floatingCharacterSize"
         static let reminderAcknowledge = "reminderAcknowledgeWindow"
+        static let hidesAtEdge = "floatingCharacterHidesAtEdge"
     }
 
     private func saveSettings() {
@@ -1280,6 +1310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(isFloatingCharacterVisible, forKey: SettingsKey.floatingCharacterVisible)
         defaults.set(floatingCharacterSize.rawValue, forKey: SettingsKey.floatingCharacterSize)
         defaults.set(reminderAcknowledge.rawValue, forKey: SettingsKey.reminderAcknowledge)
+        defaults.set(hidesFloatingCharacterAtEdge, forKey: SettingsKey.hidesAtEdge)
     }
 
     private func loadSettings() {
@@ -1287,6 +1318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let providerStr = defaults.string(forKey: SettingsKey.provider) {
             selectedProvider = providerStr == "minSheng" ? .minSheng : .zheShang
         }
+        hidesFloatingCharacterAtEdge = defaults.bool(forKey: SettingsKey.hidesAtEdge)
+        floatingCharacterController.hidesAtEdge = hidesFloatingCharacterAtEdge
         if let acknowledgeValue = defaults.object(forKey: SettingsKey.reminderAcknowledge) as? Double,
            let option = ReminderAcknowledgeOption(rawValue: acknowledgeValue) {
             reminderAcknowledge = option
