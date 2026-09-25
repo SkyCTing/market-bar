@@ -548,6 +548,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var chatController: ClaudeChatController?
     /// 「自选与持仓」配置窗口（懒创建）
     private var watchlistSettings: WatchlistSettingsController?
+    /// 「提醒管理」窗口（懒创建）
+    private var reminderList: ReminderListController?
     /// 提醒（配置存 UserDefaults，30 秒扫一次）
     private let reminderStore = ReminderStore()
     private lazy var reminderCenter = ReminderCenter(
@@ -564,6 +566,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let unreadFetchInterval: TimeInterval = 3
     /// 连续失败这么多次才把徽标显示成「读不到」，免得一次瞬时失败就闪
     private static let unreadFailureTolerance = 3
+    /// 菜单里每类提醒最多列几条，超出的去「管理提醒…」窗口看
+    private static let menuListLimit = 5
     /// 法定节假日（"2026-10-01" → "国庆节"），每天刷新一次，落在本地
     private var holidays: [String: String] = [:]
     /// 调休补班日（这些周六/周日要上班，提醒照常）
@@ -820,6 +824,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if !allAlerts.isEmpty { alertSubmenu.addItem(.separator()) }
 
+        let manageAlerts = NSMenuItem(title: "管理提醒…", action: #selector(showReminderList), keyEquivalent: "")
+        manageAlerts.target = self
+        alertSubmenu.addItem(manageAlerts)
+
         let addPriceAlert = NSMenuItem(title: "添加价格提醒…", action: #selector(addPriceAlert), keyEquivalent: "")
         addPriceAlert.target = self
         alertSubmenu.addItem(addPriceAlert)
@@ -996,7 +1004,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: "提醒", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "提醒")
 
-        for reminder in reminderStore.reminders {
+        // 菜单里只列前几条，多了就去「管理提醒…」里看 —— 免得下拉拉老长
+        for reminder in reminderStore.reminders.prefix(Self.menuListLimit) {
             let entry = NSMenuItem(
                 title: menuTitle(for: reminder),
                 action: #selector(editReminder(_:)),
@@ -1006,9 +1015,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             entry.representedObject = reminder
             submenu.addItem(entry)
         }
+        if reminderStore.reminders.count > Self.menuListLimit {
+            let more = NSMenuItem(
+                title: "还有 \(reminderStore.reminders.count - Self.menuListLimit) 条…",
+                action: #selector(showReminderList),
+                keyEquivalent: ""
+            )
+            more.target = self
+            submenu.addItem(more)
+        }
         if !reminderStore.reminders.isEmpty {
             submenu.addItem(.separator())
         }
+
+        let manage = NSMenuItem(title: "管理提醒…", action: #selector(showReminderList), keyEquivalent: "")
+        manage.target = self
+        submenu.addItem(manage)
 
         let add = NSMenuItem(title: "添加提醒…", action: #selector(addReminder), keyEquivalent: "")
         add.target = self
@@ -1062,6 +1084,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveSettings()
     }
 
+    /// 「提醒管理」窗口：定时提醒、倒计时、价格提醒都在一张表里
+    @objc private func showReminderList() {
+        let controller = reminderList ?? {
+            let created = ReminderListController()
+            created.displayName = { [weak self] target in self?.displayName(for: target) ?? "" }
+            created.onAddReminder = { [weak self] in self?.showReminderDialog(editing: nil) }
+            created.onAddPriceAlert = { [weak self] in self?.showPriceAlertDialog(editing: nil) }
+            created.onEdit = { [weak self] entry in
+                switch entry {
+                case .reminder(let reminder): self?.showReminderDialog(editing: reminder)
+                case .priceAlert(let alert): self?.showPriceAlertDialog(editing: alert)
+                }
+            }
+            created.onDelete = { [weak self] entries in self?.deleteReminderEntries(entries) }
+            return created
+        }()
+        reminderList = controller
+        controller.show(reminders: reminderStore.reminders, priceAlerts: priceAlertStore.alerts)
+    }
+
+    private func deleteReminderEntries(_ entries: [ReminderListEntry]) {
+        for entry in entries {
+            switch entry {
+            case .reminder(let reminder): reminderStore.remove(id: reminder.id)
+            case .priceAlert(let alert): priceAlertStore.remove(id: alert.id)
+            }
+        }
+        reminderCenter.reload()
+        rebuildMenu()
+        refreshReminderListIfVisible()
+    }
+
+    /// 增删改之后就地刷新管理窗口（没开着就什么都不做）
+    private func refreshReminderListIfVisible() {
+        reminderList?.refresh(reminders: reminderStore.reminders, priceAlerts: priceAlertStore.alerts)
+    }
+
     @objc private func addReminder() {
         showReminderDialog(editing: nil)
     }
@@ -1090,6 +1149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderStore.removeAll()
         reminderCenter.reload()
         rebuildMenu()
+        refreshReminderListIfVisible()
     }
 
     /// 添加 / 编辑提醒的对话框：定时（时刻 + 重复）或倒计时（时长 + 循环），
@@ -1124,6 +1184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderStore.upsert(edited)
         reminderCenter.reload()
         rebuildMenu()
+        refreshReminderListIfVisible()
     }
 
     @objc
@@ -1212,6 +1273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         priceAlertStore.removeAll()
         reminderCenter.presenter.cancelAll()
         rebuildMenu()
+        refreshReminderListIfVisible()
     }
 
     private func showPriceAlertDialog(editing alert: PriceAlert?) {
@@ -1247,6 +1309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 改了阈值/方向之后闩锁要归零，否则新条件要等价格先回到内侧才会响
         priceAlertStore.upsert(edited)
         rebuildMenu()
+        refreshReminderListIfVisible()
     }
 
     private enum SettingsKey {
