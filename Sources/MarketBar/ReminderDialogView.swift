@@ -68,12 +68,15 @@ final class ReminderDialogView: NSView {
 
     private static let repeatTitles = ["每天", "每周", "每月", "每 N 天"]
 
-    init(reminder: Reminder?) {
+    /// `initialKind` 只在新建（`reminder == nil`）时起作用：
+    /// 「添加提醒…」先问类型，选了倒计时就直接把分段控件停在那一档
+    init(reminder: Reminder?, initialKind: Reminder.Kind = .scheduled) {
         editingCountdown = reminder?.kind == .countdown
         super.init(frame: NSRect(x: 0, y: 0, width: 384, height: 236))
 
         buildLayout()
         apply(reminder)
+        if reminder == nil, initialKind == .countdown { typeControl.selectedSegment = 1 }
         updateVisibility()
     }
 
