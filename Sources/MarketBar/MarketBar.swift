@@ -506,6 +506,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hoverPanel: HoverPanel?
     /// 右键人物弹出的 AI 聊天窗（懒创建）
     private var chatController: ClaudeChatController?
+    /// 「自选与持仓」配置窗口（懒创建）
+    private var watchlistSettings: WatchlistSettingsController?
     /// 提醒（配置存 UserDefaults，30 秒扫一次）
     private let reminderStore = ReminderStore()
     private lazy var reminderCenter = ReminderCenter(
@@ -890,6 +892,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: "自选配置", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "自选配置")
 
+        let edit = NSMenuItem(title: "编辑自选与持仓…", action: #selector(showWatchlistSettings), keyEquivalent: "")
+        edit.target = self
+        submenu.addItem(edit)
+
+        submenu.addItem(.separator())
+
         let open = NSMenuItem(title: "打开配置文件…", action: #selector(openWatchlistConfig), keyEquivalent: "")
         open.target = self
         submenu.addItem(open)
@@ -902,6 +910,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    /// 打开配置窗口（懒创建）。保存后由 `saveWatchlistConfig(_:)` 落盘并重载。
+    @objc private func showWatchlistSettings() {
+        let controller = watchlistSettings ?? {
+            let created = WatchlistSettingsController()
+            created.onSave = { [weak self] config in self?.saveWatchlistConfig(config) }
+            return created
+        }()
+        watchlistSettings = controller
+        controller.show()
+    }
+
+    /// 配置窗口点「保存」：写盘 + 重载 + 作废缓存里的行情
+    private func saveWatchlistConfig(_ config: WatchlistConfig) {
+        config.write()
+        applyWatchlistConfig()
+    }
+
     /// 用默认编辑器打开配置文件（不存在会先按默认值生成一份）
     @objc private func openWatchlistConfig() {
         let url = WatchlistConfig.fileURL
@@ -912,6 +937,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func reloadWatchlistConfig() {
+        applyWatchlistConfig()
+    }
+
+    /// 重新从配置文件读清单与持仓。
+    ///
+    /// 行情缓存必须一起清掉：清单里删掉的代码若留在 `currentStockQuotes` /
+    /// `dailyBars` 里，合计盈亏会把它算进去（面板上看不见，但数字是错的）。
+    private func applyWatchlistConfig() {
         StockWatchlist.reload()
         StockHoldings.reload()
         currentStockQuotes = [:]

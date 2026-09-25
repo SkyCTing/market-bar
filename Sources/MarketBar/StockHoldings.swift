@@ -1,12 +1,16 @@
 import Foundation
 
-/// 持仓股数（写死的，和 `StockWatchlist` 一样按需改）。
+/// 持仓股数。
 ///
 /// 独立成表而不是塞进 `StockWatchlist.Entry`：持仓与自选是两回事
 /// （上证指数只看不持），而且给 `Entry` 加字段会波及解析器与既有测试的构造点。
 ///
+/// 数据来自配置文件（`WatchlistConfig`），默认值见 `WatchlistConfig.default`；
+/// 菜单「自选配置 → 编辑自选与持仓…」改的就是它。
+///
 /// ⚠️ 持仓代码必须是 `StockWatchlist` 的子集：面板的行由自选清单生成，
 /// 持仓表里多出来的代码既不会有行、也拿不到行情，会静默不计入合计（有测试锁住这条）。
+/// 配置窗口把这份差额补成行显示出来，就是为了让这条约束在界面上看得见。
 enum StockHoldings {
     /// 运行时从配置文件读；菜单里「重新载入配置」可刷新。
     /// `nonisolated(unsafe)`：启动时写一次，之后只在主线程通过 reload() 改，读的地方都是主线程
@@ -15,24 +19,6 @@ enum StockHoldings {
     static func reload() {
         sharesByCode = WatchlistConfig.load().holdings
     }
-
-    private static let builtInShares: [String: Int] = [
-        "sh600036": 1_500,
-        "sz300803": 435,
-        "sz000034": 980,
-        "sz300339": 500,
-        "sz002657": 1_100,
-        "sz300468": 700,
-        "sz300657": 400,
-        "sz000564": 10_000,
-        "sh603406": 400,
-        "sz300375": 2_000,
-        "sz301609": 200,
-        "sh513130": 880_000,
-        "sh512170": 1_100_000,
-        "sz159813": 140_000,
-        "sz159567": 110_000,
-    ]
 
     /// nil = 没有持仓（如上证指数），或股数非正
     static func shares(for code: String) -> Int? {
