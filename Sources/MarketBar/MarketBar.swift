@@ -548,6 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             isNegative: currentPriceInfo.isNegative
         )
         floatingCharacterController.setVisible(isFloatingCharacterVisible)
+        reminderCenter.start()
         floatingCharacterController.onRightClick = { [weak self] anchor in
             self?.showChat(anchor: anchor)
         }
@@ -848,6 +849,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        menu.addItem(makeReminderMenuItem())
+        menu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
