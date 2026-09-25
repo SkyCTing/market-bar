@@ -101,8 +101,12 @@ final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate
         for button in [addReminder, addAlert, testButton, editButton, deleteButton] {
             button.bezelStyle = .rounded
         }
+        // ⚠️ 这两个按钮建的时候都是 target: nil —— 必须逐个接上，
+        // 漏一个的表现就是「点了完全没反应」，而且不报错、不崩
         editButton.target = self
         editButton.action = #selector(editSelected)
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteSelected)
 
         let leftButtons = NSStackView(views: [addReminder, addAlert, testButton])
         leftButtons.spacing = 8
