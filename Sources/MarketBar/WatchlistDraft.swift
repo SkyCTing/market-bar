@@ -53,10 +53,6 @@ struct WatchlistDraft: Equatable {
 
     // MARK: - 增删改
 
-    mutating func appendRow() {
-        rows.append(WatchlistRow(code: "", name: "", shares: nil))
-    }
-
     /// 删除若干行。传入的是**删除前**的下标，所以从大到小删，避免下标位移。
     mutating func remove(at indexes: IndexSet) {
         for index in indexes.sorted(by: >) where rows.indices.contains(index) {
@@ -111,7 +107,7 @@ struct WatchlistDraft: Equatable {
                 issues.append(Issue(
                     kind: .malformedCode,
                     row: index,
-                    message: "第 \(display) 行：\(row.code) 不是有效代码，应为 sh/sz + 6 位数字，如 sh600036"
+                    message: "第 \(display) 行：\(row.code) 不是有效代码，应为 sh/sz/bj + 6 位数字，如 sh600036"
                 ))
                 continue
             }

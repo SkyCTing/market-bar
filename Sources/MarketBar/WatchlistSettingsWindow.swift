@@ -30,7 +30,6 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     private let resultsTable = NSTableView()
     private let resultsScroll = NSScrollView()
     private let messageLabel = NSTextField(labelWithString: "")
-    private let addButton = NSButton(title: "添加", target: nil, action: nil)
     private let removeButton = NSButton(title: "删除", target: nil, action: nil)
     private let upButton = NSButton(title: "上移", target: nil, action: nil)
     private let downButton = NSButton(title: "下移", target: nil, action: nil)
@@ -55,8 +54,8 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     private static let resultColumnWidths: [CGFloat] = [232, 96, 130]
     private static let resultRowHeight: CGFloat = 22
     private static let maximumVisibleResults = 6
-    private static let hint = "输代码 / 名称 / 拼音搜索，点一下加入清单；下面的表格也能直接改，"
-        + "代码只填 6 位数字会自动补前缀，股数留空 = 不持仓。"
+    private static let hint = "在上面搜代码 / 名称 / 拼音加入清单（这是唯一的加行方式）；"
+        + "下面的表格能改名称、代码与股数 —— 只填 6 位数字会自动补前缀，股数留空 = 不持仓。"
 
     init(draft: WatchlistDraft) {
         self.draft = draft
@@ -147,7 +146,6 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         messageLabel.lineBreakMode = .byTruncatingTail
 
         for (button, action) in [
-            (addButton, #selector(addRow)),
             (removeButton, #selector(removeRows)),
             (upButton, #selector(moveRowUp)),
             (downButton, #selector(moveRowDown)),
@@ -163,7 +161,7 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         // 刻意不给「保存 / 取消」设 ⌘Return、Esc 快捷键：表格里正在编辑时按回车是想换行/换格，
         // 而 Esc 是想撤销这一格 —— 都撞上「保存并关窗」「丢弃全部改动」就太伤了。点按钮最稳。
 
-        let editButtons = NSStackView(views: [addButton, removeButton, upButton, downButton])
+        let editButtons = NSStackView(views: [removeButton, upButton, downButton])
         editButtons.orientation = .horizontal
         editButtons.spacing = 8
 
@@ -383,17 +381,19 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
 
-            let results = await StockSearchService.search(keyword)
+            let outcome = await StockSearchService.searchWithFallback(keyword)
             guard !Task.isCancelled, let self else { return }
             // 网络回来时用户可能已经改了关键词，对不上就丢掉
             guard self.searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == keyword else {
                 return
             }
-            self.showResults(results)
+            self.showResults(outcome.results, matched: outcome.keyword, requested: keyword)
         }
     }
 
-    private func showResults(_ results: [StockSearchResult]) {
+    /// `matched` 是实际命中的关键词（可能比 `requested` 短，因为有前缀回退）；
+    /// 两者不同时在提示行里说明，免得用户以为自己输错了。
+    private func showResults(_ results: [StockSearchResult], matched: String? = nil, requested: String? = nil) {
         searchResults = results
         highlightedResult = results.isEmpty ? -1 : 0
         resultsTable.reloadData()
@@ -410,11 +410,14 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
             resultsHeightConstraint?.constant = Self.resultRowHeight * visible + 4
         }
 
-        if results.isEmpty, !searchField.stringValue.isEmpty,
-           searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-               .count >= StockSearch.minimumKeywordLength {
-            showMessage("没搜到这个标的", isError: false)
-        } else if !results.isEmpty {
+        if results.isEmpty {
+            // 只有「用户确实输了够长的词却没搜到」才提示，刚敲一两个字符时别吵
+            if let requested, requested.count >= StockSearch.minimumKeywordLength {
+                showMessage("没搜到「\(requested)」", isError: false)
+            }
+        } else if let matched, let requested, matched != requested {
+            showMessage("没搜到「\(requested)」，下面是「\(matched)」的结果", isError: false)
+        } else {
             messageLabel.stringValue = ""
         }
     }
@@ -549,17 +552,6 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     }
 
     // MARK: - 按钮
-
-    @objc private func addRow() {
-        draft.appendRow()
-        tableView.reloadData()
-        let row = draft.rows.count - 1
-        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        tableView.scrollRowToVisible(row)
-        // 直接落到名称格开始打字，省一次点击
-        tableView.editColumn(0, row: row, with: nil, select: true)
-        refreshButtons()
-    }
 
     @objc private func removeRows() {
         let selected = tableView.selectedRowIndexes

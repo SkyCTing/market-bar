@@ -155,6 +155,86 @@ final class StockSearchTests: XCTestCase {
         XCTAssertNotNil(StockSearch.url(keyword: "60"))
     }
 
+    // MARK: - 前缀回退
+
+    /// 用户明确要求：打到 2 个字就该出候选。这条钉一下，别被误改成别的数。
+    func testMinimumKeywordLengthIsTwo() {
+        XCTAssertEqual(StockSearch.minimumKeywordLength, 2)
+    }
+
+    func testFallbackTriesTheWholeKeywordFirst() {
+        XCTAssertEqual(StockSearch.fallbackKeywords(for: "招商银行")[0], "招商银行")
+    }
+
+    /// 实测：「招商银行」有 1 条、「招商银行股」0 条 —— 多打一个字候选不该整个消失
+    func testFallbackTrimsOneCharacterAtATime() {
+        XCTAssertEqual(
+            StockSearch.fallbackKeywords(for: "招商银行股"),
+            ["招商银行股", "招商银行", "招商银", "招商"]
+        )
+    }
+
+    func testFallbackStopsAtMinimumLength() {
+        XCTAssertEqual(StockSearch.fallbackKeywords(for: "600036"), ["600036", "60003", "6000", "600"])
+    }
+
+    /// 上限是防止用户粘一长串进来时把接口打爆
+    func testFallbackRespectsMaximumAttempts() {
+        XCTAssertEqual(
+            StockSearch.fallbackKeywords(for: "zhaoshangyinhang", maximumAttempts: 3),
+            ["zhaoshangyinhang", "zhaoshangyinhan", "zhaoshangyinha"]
+        )
+    }
+
+    func testFallbackLeavesTooShortKeywordsAlone() {
+        XCTAssertEqual(StockSearch.fallbackKeywords(for: "招"), [])
+        XCTAssertEqual(StockSearch.fallbackKeywords(for: ""), [])
+        XCTAssertEqual(StockSearch.fallbackKeywords(for: "招商"), ["招商"])
+    }
+
+    // MARK: - 依次尝试
+
+    func testFirstMatchReturnsTheFirstNonEmpty() async {
+        let matched = await StockSearch.firstMatch(in: ["招商银行股", "招商银行"]) { keyword in
+            keyword == "招商银行"
+                ? [StockSearchResult(code: "sh600036", name: "招商银行", pinyin: "zsyh", kind: "GP-A")]
+                : []
+        }
+
+        XCTAssertEqual(matched?.keyword, "招商银行")
+        XCTAssertEqual(matched?.results.map(\.code), ["sh600036"])
+    }
+
+    /// 第一个词就有结果时不该再往下试（省请求）
+    func testFirstMatchStopsAtTheFirstHit() async {
+        var tried: [String] = []
+        _ = await StockSearch.firstMatch(in: ["招商", "招"]) { keyword in
+            tried.append(keyword)
+            return [StockSearchResult(code: "sh600036", name: "招商银行", pinyin: "zsyh", kind: "GP-A")]
+        }
+
+        XCTAssertEqual(tried, ["招商"])
+    }
+
+    func testFirstMatchReturnsNilWhenEverythingIsEmpty() async {
+        let matched = await StockSearch.firstMatch(in: ["查无此股", "查无此"]) { _ in [] }
+
+        XCTAssertNil(matched)
+    }
+
+    func testFirstMatchSkipsEmptyResultsAndKeepsTrying() async {
+        var tried: [String] = []
+        let matched = await StockSearch.firstMatch(in: ["6000361", "600036"]) { keyword in
+            tried.append(keyword)
+            return keyword == "600036"
+                ? [StockSearchResult(code: "sh600036", name: "招商银行", pinyin: "zsyh", kind: "GP-A")]
+                : []
+        }
+
+        XCTAssertEqual(tried, ["6000361", "600036"])
+        XCTAssertEqual(matched?.keyword, "600036")
+    }
+
     // MARK: - 按名称挑一条
 
     func testBestMatchTakesTheOnlyResult() {

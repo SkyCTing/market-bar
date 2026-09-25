@@ -91,6 +91,43 @@ enum StockSearch {
         return results
     }
 
+    /// 依次要试的关键词：先是整个词，然后一级级砍掉尾巴。
+    ///
+    /// 接口只做前缀式的匹配，多打一个字就可能整个匹配不上 —— 实测
+    /// 「招商银行」有 1 条、「招商银行股」0 条，「600036」1 条、「6000361」0 条。
+    /// 不兜这一下的话，用户边打字边搜，候选会在他打得最准的时候突然整个消失。
+    ///
+    /// `maximumAttempts` 是上限：粘一长串进来时不至于把接口打爆。
+    static func fallbackKeywords(
+        for keyword: String,
+        minimumLength: Int = minimumKeywordLength,
+        maximumAttempts: Int = 4
+    ) -> [String] {
+        var candidates: [String] = []
+        var current = keyword
+
+        while current.count >= minimumLength, candidates.count < maximumAttempts {
+            candidates.append(current)
+            current = String(current.dropLast())
+        }
+
+        return candidates
+    }
+
+    /// 按顺序试关键词，返回第一个有结果的。
+    ///
+    /// `search` 注入进来是为了离线也能单测（不用真发请求）。
+    static func firstMatch(
+        in keywords: [String],
+        search: (String) async -> [StockSearchResult]
+    ) async -> (keyword: String, results: [StockSearchResult])? {
+        for keyword in keywords {
+            let results = await search(keyword)
+            if !results.isEmpty { return (keyword, results) }
+        }
+        return nil
+    }
+
     /// 按名称补全代码时，从候选里挑一条。
     ///
     /// 比按代码补名称保守得多：重名、近名的标的一抓一大把（搜「招商」能出十条），
@@ -133,6 +170,23 @@ enum StockSearch {
 
 /// 搜索建议的网络请求。
 enum StockSearchService {
+    /// 搜索框用：搜不到就退回用更短的前缀再搜。
+    ///
+    /// 返回实际命中的那个关键词（可能比用户输的短），好让界面说清楚
+    /// 「是按『招商银行』匹配到的」。
+    ///
+    /// ⚠️ **只给搜索框用，别拿去做自动补全**：表格里补名称/补代码要求精确，
+    /// 退回前缀会搜出别的标的，`results.first` 一取就填错了。
+    static func searchWithFallback(
+        _ keyword: String,
+        session: URLSession = .shared
+    ) async -> (keyword: String, results: [StockSearchResult]) {
+        let matched = await StockSearch.firstMatch(in: StockSearch.fallbackKeywords(for: keyword)) {
+            await search($0, session: session)
+        }
+        return matched ?? (keyword, [])
+    }
+
     static func search(_ keyword: String, session: URLSession = .shared) async -> [StockSearchResult] {
         guard let url = StockSearch.url(keyword: keyword) else { return [] }
 

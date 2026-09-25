@@ -64,7 +64,7 @@ final class WatchlistDraftTests: XCTestCase {
         XCTAssertEqual(draft.config().holdings, ["sz300750": 100])
     }
 
-    /// 代码为空的行（用户点了「添加」但没填）不该混进配置
+    /// 代码被清空的那一行不该混进配置（保存前会先被 issues() 拦下，这里是兜底）
     func testEmptyCodeRowIsDroppedOnSave() {
         let draft = WatchlistDraft(rows: [
             WatchlistRow(code: "sh600036", name: "招商银行", shares: nil),
@@ -190,15 +190,6 @@ final class WatchlistDraftTests: XCTestCase {
     }
 
     // MARK: - 增删排序
-
-    func testAppendRowAddsABlankRow() {
-        var draft = WatchlistDraft(config: .default)
-
-        draft.appendRow()
-
-        XCTAssertEqual(draft.rows.count, WatchlistConfig.default.watchlist.count + 1)
-        XCTAssertEqual(draft.rows.last, WatchlistRow(code: "", name: "", shares: nil))
-    }
 
     func testRemoveMultipleRowsUsesPreDeletionIndexes() {
         var draft = WatchlistDraft(rows: [
