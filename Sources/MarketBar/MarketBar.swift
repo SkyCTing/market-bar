@@ -191,6 +191,13 @@ struct StockQuote: Sendable {
     /// 行情时间戳所属的交易日 `2026-09-23`；解析失败为空串
     let sessionDate: String
 
+    /// 数值价格。`price` 是已格式化的字符串，`"--"` 表示无数据 ——
+    /// 阈值比较要用数值，别在每个判定点各写一遍 `Double(...)` 加哨兵判断
+    var numericPrice: Double? {
+        guard price != "--", let value = Double(price), value.isFinite, value > 0 else { return nil }
+        return value
+    }
+
     static func placeholder(
         code: String,
         name: String,
@@ -563,11 +570,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var makeupWorkdays: Set<String> = []
     private var holidayFetchDate: Date?
 
-    // Price alert state
-    private var highPriceThreshold: Double?  // alert when price >= this
-    private var lowPriceThreshold: Double?   // alert when price <= this
-    private var highAlertTriggered = false
-    private var lowAlertTriggered = false
+    /// 价格提醒：金价与股票共用一套（模型与判定见 PriceAlert.swift），存 UserDefaults
+    private let priceAlertStore = PriceAlertStore()
     private var isMenuOpen = false
     private var isFloatingCharacterVisible = true
     private var floatingCharacterSize: FloatingCharacterSizeOption = .defaultOption
@@ -669,10 +673,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshHolidaysIfNeeded()
         refreshUnreadIfNeeded()
         updateFloatingCharacter()
-        checkPriceAlerts()
-
         currentMarketData = await marketTask
         currentStockQuotes = await stockTask
+
+        // 金价和股票行情都拿到之后再判一次。单一判定点，代价是金价提醒要等到
+        // 三个请求里最慢那个回来（各自 5 秒超时）—— 对价格提醒来说无所谓
+        checkPriceAlerts()
         // 纯计算，无 await：不影响金价与状态栏的关键路径
         floatingCharacterController.updateProfitLoss(
             marketClosedGreeting()?.greeting ?? totalProfitLossText()
@@ -794,92 +800,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.setSubmenu(refreshSubmenu, for: refreshMenuItem)
         menu.addItem(refreshMenuItem)
 
-        // Price alert submenu
+        // 价格提醒（金价 + 股票共用一套）
         let alertMenuItem = NSMenuItem(title: "价格提醒", action: nil, keyEquivalent: "")
         let alertSubmenu = NSMenu(title: "价格提醒")
 
-        // High price alert
-        if let high = highPriceThreshold {
-            let item = NSMenuItem(
-                title: "📈 高价提醒: ≥ \(format(price: high))  ✓",
-                action: nil,
+        let allAlerts = priceAlertStore.alerts
+        for alert in allAlerts.prefix(8) {
+            let entry = NSMenuItem(
+                title: "\(alert.summary(displayName: displayName(for: alert.target))) · \(alert.methods.title)",
+                action: #selector(editPriceAlert(_:)),
                 keyEquivalent: ""
             )
-            item.isEnabled = false
-            alertSubmenu.addItem(item)
-
-            let modifyItem = NSMenuItem(
-                title: "修改高价提醒",
-                action: #selector(setHighPriceAlert),
-                keyEquivalent: ""
-            )
-            modifyItem.target = self
-            alertSubmenu.addItem(modifyItem)
-
-            let clearItem = NSMenuItem(
-                title: "清除高价提醒",
-                action: #selector(clearHighPriceAlert),
-                keyEquivalent: ""
-            )
-            clearItem.target = self
-            alertSubmenu.addItem(clearItem)
-        } else {
-            let item = NSMenuItem(
-                title: "设置高价提醒 (≥)",
-                action: #selector(setHighPriceAlert),
-                keyEquivalent: ""
-            )
-            item.target = self
-            alertSubmenu.addItem(item)
+            entry.target = self
+            entry.representedObject = alert
+            alertSubmenu.addItem(entry)
         }
-
-        alertSubmenu.addItem(.separator())
-
-        // Low price alert
-        if let low = lowPriceThreshold {
-            let item = NSMenuItem(
-                title: "📉 低价提醒: ≤ \(format(price: low))  ✓",
-                action: nil,
-                keyEquivalent: ""
-            )
-            item.isEnabled = false
-            alertSubmenu.addItem(item)
-
-            let modifyItem = NSMenuItem(
-                title: "修改低价提醒",
-                action: #selector(setLowPriceAlert),
-                keyEquivalent: ""
-            )
-            modifyItem.target = self
-            alertSubmenu.addItem(modifyItem)
-
-            let clearItem = NSMenuItem(
-                title: "清除低价提醒",
-                action: #selector(clearLowPriceAlert),
-                keyEquivalent: ""
-            )
-            clearItem.target = self
-            alertSubmenu.addItem(clearItem)
-        } else {
-            let item = NSMenuItem(
-                title: "设置低价提醒 (≤)",
-                action: #selector(setLowPriceAlert),
-                keyEquivalent: ""
-            )
-            item.target = self
-            alertSubmenu.addItem(item)
+        if allAlerts.count > 8 {
+            alertSubmenu.addItem(NSMenuItem(title: "还有 \(allAlerts.count - 8) 条…", action: nil, keyEquivalent: ""))
         }
+        if !allAlerts.isEmpty { alertSubmenu.addItem(.separator()) }
 
-        // Clear all
-        if highPriceThreshold != nil || lowPriceThreshold != nil {
-            alertSubmenu.addItem(.separator())
-            let clearAllItem = NSMenuItem(
-                title: "清除所有提醒",
-                action: #selector(clearAllAlerts),
-                keyEquivalent: ""
-            )
-            clearAllItem.target = self
-            alertSubmenu.addItem(clearAllItem)
+        let addPriceAlert = NSMenuItem(title: "添加价格提醒…", action: #selector(addPriceAlert), keyEquivalent: "")
+        addPriceAlert.target = self
+        alertSubmenu.addItem(addPriceAlert)
+
+        if !allAlerts.isEmpty {
+            let clear = NSMenuItem(title: "清除全部", action: #selector(clearAllPriceAlerts), keyEquivalent: "")
+            clear.target = self
+            alertSubmenu.addItem(clear)
         }
 
         menu.setSubmenu(alertSubmenu, for: alertMenuItem)
@@ -1207,130 +1155,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Price Alert
 
     private func checkPriceAlerts() {
-        guard currentPrice > 0 else { return }
+        guard !priceAlertStore.alerts.isEmpty else { return }
 
-        if let high = highPriceThreshold {
-            if currentPrice >= high && !highAlertTriggered {
-                highAlertTriggered = true
-                showToastNotification(
-                    title: "📈 金价上涨提醒",
-                    body: "\(selectedProvider.displayName) 当前价格 \(format(price: currentPrice))，已达到 ≥ \(format(price: high)) 的提醒条件"
-                )
-            } else if currentPrice < high {
-                highAlertTriggered = false
+        for alert in priceAlertStore.alerts {
+            // 这只标的这轮没行情（停牌、接口没返回）就跳过，别拿旧价格去判
+            guard let targetPrice = currentPrice(for: alert.target) else { continue }
+
+            let outcome = PriceAlertEvaluator.evaluate(alert, price: targetPrice)
+            // 闩锁变了就落盘：不落盘的话「不重复」的提醒重启后会再响一次
+            if outcome.updated != alert {
+                priceAlertStore.upsert(outcome.updated)
             }
-        }
+            guard outcome.fired else { continue }
 
-        if let low = lowPriceThreshold {
-            if currentPrice <= low && !lowAlertTriggered {
-                lowAlertTriggered = true
-                showToastNotification(
-                    title: "📉 金价下跌提醒",
-                    body: "\(selectedProvider.displayName) 当前价格 \(format(price: currentPrice))，已达到 ≤ \(format(price: low)) 的提醒条件"
-                )
-            } else if currentPrice > low {
-                lowAlertTriggered = false
-            }
+            reminderCenter.presenter.fire(
+                title: "\(alert.direction.arrow) \(displayName(for: alert.target))",
+                body: alert.displayMessage(price: targetPrice),
+                methods: alert.methods,
+                key: alert.id
+            )
         }
     }
 
-    private func showToastNotification(title: String, body: String) {
-        NSSound.beep()
-        ToastWindow.show(title: title, body: body)
+    /// 某个标的此刻的价格；没有可用价格就返回 nil
+    private func currentPrice(for target: PriceAlert.Target) -> Double? {
+        switch target {
+        case .gold:
+            return currentPrice > 0 ? currentPrice : nil
+        case .stock(let code):
+            return currentStockQuotes[code]?.numericPrice
+        }
     }
 
-    @objc
-    private func setHighPriceAlert() {
-        if let value = showPriceInputDialog(
-            title: "设置高价提醒",
-            message: "当金价 ≥ 输入值时发送通知提醒",
-            defaultValue: highPriceThreshold
-        ) {
-            highPriceThreshold = value
-            highAlertTriggered = false
+    /// 菜单与提醒标题里用的显示名
+    private func displayName(for target: PriceAlert.Target) -> String {
+        switch target {
+        case .gold:
+            return "金价"
+        case .stock(let code):
+            if let quote = currentStockQuotes[code], !quote.name.isEmpty { return quote.name }
+            return StockWatchlist.entries.first { $0.code == code }?.name ?? code
+        }
+    }
+
+    /// 添加 / 编辑价格提醒
+    @objc private func addPriceAlert() {
+        showPriceAlertDialog(editing: nil)
+    }
+
+    @objc private func editPriceAlert(_ sender: NSMenuItem) {
+        guard let alert = sender.representedObject as? PriceAlert else { return }
+        showPriceAlertDialog(editing: alert)
+    }
+
+    @objc private func clearAllPriceAlerts() {
+        priceAlertStore.removeAll()
+        reminderCenter.presenter.cancelAll()
+        rebuildMenu()
+    }
+
+    private func showPriceAlertDialog(editing alert: PriceAlert?) {
+        let form = PriceAlertDialogView(
+            alert: alert,
+            targets: PriceAlertDialogView.TargetOption.all(entries: StockWatchlist.entries)
+        )
+
+        let dialog = NSAlert()
+        dialog.messageText = alert == nil ? "添加价格提醒" : "编辑价格提醒"
+        dialog.informativeText = alert == nil
+            ? "金价和股票都能盯；不填提示语就用「代码: 价格」"
+            : "改完点保存；也可以删除这条"
+        dialog.addButton(withTitle: "保存")
+        dialog.addButton(withTitle: "取消")
+        if alert != nil { dialog.addButton(withTitle: "删除") }
+        dialog.accessoryView = form
+        dialog.window.initialFirstResponder = form.firstResponderControl
+
+        let response = dialog.runModal()
+        if response == .alertThirdButtonReturn, let alert {
+            priceAlertStore.remove(id: alert.id)
+            reminderCenter.presenter.cancelAll()
             rebuildMenu()
-            saveSettings()
+            return
         }
-    }
+        guard response == .alertFirstButtonReturn else { return }
 
-    @objc
-    private func setLowPriceAlert() {
-        if let value = showPriceInputDialog(
-            title: "设置低价提醒",
-            message: "当金价 ≤ 输入值时发送通知提醒",
-            defaultValue: lowPriceThreshold
-        ) {
-            lowPriceThreshold = value
-            lowAlertTriggered = false
-            rebuildMenu()
-            saveSettings()
+        guard let edited = form.makeAlert(basedOn: alert) else {
+            NSSound.beep()
+            return
         }
-    }
-
-    @objc
-    private func clearHighPriceAlert() {
-        highPriceThreshold = nil
-        highAlertTriggered = false
+        // 改了阈值/方向之后闩锁要归零，否则新条件要等价格先回到内侧才会响
+        priceAlertStore.upsert(edited)
         rebuildMenu()
-        saveSettings()
     }
-
-    @objc
-    private func clearLowPriceAlert() {
-        lowPriceThreshold = nil
-        lowAlertTriggered = false
-        rebuildMenu()
-        saveSettings()
-    }
-
-    @objc
-    private func clearAllAlerts() {
-        highPriceThreshold = nil
-        lowPriceThreshold = nil
-        highAlertTriggered = false
-        lowAlertTriggered = false
-        rebuildMenu()
-        saveSettings()
-    }
-
-    private func showPriceInputDialog(title: String, message: String, defaultValue: Double?) -> Double? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "确定")
-        alert.addButton(withTitle: "取消")
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
-        input.placeholderString = "请输入价格，例如 880.50"
-        if let value = defaultValue {
-            input.stringValue = format(price: value)
-        }
-        alert.accessoryView = input
-        alert.window.initialFirstResponder = input
-
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return nil }
-
-        let text = input.stringValue.trimmingCharacters(in: .whitespaces)
-        guard let price = Double(text), price > 0 else {
-            let errorAlert = NSAlert()
-            errorAlert.messageText = "输入无效"
-            errorAlert.informativeText = "请输入有效的价格数字"
-            errorAlert.alertStyle = .warning
-            errorAlert.runModal()
-            return nil
-        }
-        return price
-    }
-
-    // MARK: - Settings Persistence
 
     private enum SettingsKey {
         static let provider = "selectedProvider"
         static let refreshInterval = "refreshInterval"
-        static let highThreshold = "highPriceThreshold"
-        static let lowThreshold = "lowPriceThreshold"
         static let floatingCharacterVisible = "floatingCharacterVisible"
         static let floatingCharacterSize = "floatingCharacterSize"
         static let reminderAcknowledge = "reminderAcknowledgeWindow"
@@ -1341,16 +1262,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let defaults = UserDefaults.standard
         defaults.set(selectedProvider == .zheShang ? "zheShang" : "minSheng", forKey: SettingsKey.provider)
         defaults.set(refreshInterval.rawValue, forKey: SettingsKey.refreshInterval)
-        if let high = highPriceThreshold {
-            defaults.set(high, forKey: SettingsKey.highThreshold)
-        } else {
-            defaults.removeObject(forKey: SettingsKey.highThreshold)
-        }
-        if let low = lowPriceThreshold {
-            defaults.set(low, forKey: SettingsKey.lowThreshold)
-        } else {
-            defaults.removeObject(forKey: SettingsKey.lowThreshold)
-        }
         defaults.set(isFloatingCharacterVisible, forKey: SettingsKey.floatingCharacterVisible)
         defaults.set(floatingCharacterSize.rawValue, forKey: SettingsKey.floatingCharacterSize)
         defaults.set(reminderAcknowledge.rawValue, forKey: SettingsKey.reminderAcknowledge)
@@ -1372,12 +1283,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let intervalValue = defaults.object(forKey: SettingsKey.refreshInterval) as? Double,
            let interval = RefreshIntervalOption(rawValue: intervalValue) {
             refreshInterval = interval
-        }
-        if defaults.object(forKey: SettingsKey.highThreshold) != nil {
-            highPriceThreshold = defaults.double(forKey: SettingsKey.highThreshold)
-        }
-        if defaults.object(forKey: SettingsKey.lowThreshold) != nil {
-            lowPriceThreshold = defaults.double(forKey: SettingsKey.lowThreshold)
         }
         if defaults.object(forKey: SettingsKey.floatingCharacterVisible) != nil {
             isFloatingCharacterVisible = defaults.bool(forKey: SettingsKey.floatingCharacterVisible)
@@ -1445,11 +1350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         var alertParts: [String] = []
-        if let high = highPriceThreshold {
-            alertParts.append("≥ \(format(price: high))")
-        }
-        if let low = lowPriceThreshold {
-            alertParts.append("≤ \(format(price: low))")
+        for alert in priceAlertStore.alerts(for: .gold) {
+            alertParts.append("\(alert.direction.symbol) \(format(price: alert.threshold))")
         }
         let alertInfo = alertParts.isEmpty ? "未设置" : alertParts.joined(separator: " | ")
 
@@ -1588,161 +1490,6 @@ struct HoverPanelData {
     let market: MarketData
     let stocks: [StockRow]
     let unread: UnreadBadge.Counts
-}
-
-// MARK: - Toast Notification Window
-
-@MainActor
-final class ToastWindow {
-    private static var currentWindow: NSWindow?
-    private static var dismissTimer: Timer?
-
-    static func show(title: String, body: String, duration: TimeInterval = 30) {
-        // Dismiss previous toast
-        dismiss()
-
-        guard let screen = NSScreen.main else { return }
-
-        let padding: CGFloat = 20
-        let windowWidth: CGFloat = 380
-        let accentWidth: CGFloat = 5
-        let closeButtonSize: CGFloat = 20
-
-        // --- Outer container (holds accent bar + content) ---
-        let containerView = NSView()
-        containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.96).cgColor
-        containerView.layer?.cornerRadius = 14
-        containerView.layer?.borderColor = NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.0, alpha: 0.5).cgColor
-        containerView.layer?.borderWidth = 1
-
-        // --- Gold accent bar on the left ---
-        let accentBar = NSView()
-        accentBar.wantsLayer = true
-        accentBar.layer?.backgroundColor = NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.0, alpha: 1).cgColor
-        accentBar.layer?.cornerRadius = 2
-        accentBar.translatesAutoresizingMaskIntoConstraints = false
-        containerView.addSubview(accentBar)
-
-        // --- Close button (✕) ---
-        let closeButton = NSButton(frame: .zero)
-        closeButton.bezelStyle = .inline
-        closeButton.isBordered = false
-        closeButton.title = "✕"
-        closeButton.font = .systemFont(ofSize: 14, weight: .medium)
-        closeButton.contentTintColor = NSColor(white: 0.6, alpha: 1)
-        closeButton.target = self
-        closeButton.action = #selector(handleClose)
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        containerView.addSubview(closeButton)
-
-        // --- Title ---
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
-        titleLabel.textColor = .white
-        titleLabel.maximumNumberOfLines = 1
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        containerView.addSubview(titleLabel)
-
-        // --- Body ---
-        let bodyLabel = NSTextField(wrappingLabelWithString: body)
-        bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
-        bodyLabel.textColor = NSColor(white: 0.88, alpha: 1)
-        bodyLabel.maximumNumberOfLines = 5
-        bodyLabel.preferredMaxLayoutWidth = windowWidth - padding * 2 - accentWidth - 12
-        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
-        containerView.addSubview(bodyLabel)
-
-        let contentLeading = padding + accentWidth + 10
-
-        NSLayoutConstraint.activate([
-            // Accent bar
-            accentBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
-            accentBar.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 14),
-            accentBar.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -14),
-            accentBar.widthAnchor.constraint(equalToConstant: accentWidth),
-
-            // Close button
-            closeButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 10),
-            closeButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -10),
-            closeButton.widthAnchor.constraint(equalToConstant: closeButtonSize),
-            closeButton.heightAnchor.constraint(equalToConstant: closeButtonSize),
-
-            // Title
-            titleLabel.topAnchor.constraint(equalTo: containerView.topAnchor, constant: padding),
-            titleLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: contentLeading),
-            titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
-
-            // Body
-            bodyLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
-            bodyLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: contentLeading),
-            bodyLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -padding),
-            bodyLabel.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -padding),
-        ])
-
-        // Calculate content height
-        let fittingSize = containerView.fittingSize
-        let windowHeight = max(fittingSize.height, 80)
-
-        let screenRect = screen.visibleFrame
-        let windowRect = NSRect(
-            x: screenRect.maxX - windowWidth - 20,
-            y: screenRect.maxY - windowHeight - 20,
-            width: windowWidth,
-            height: windowHeight
-        )
-
-        let window = NSPanel(
-            contentRect: windowRect,
-            styleMask: [.nonactivatingPanel, .borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.level = .floating
-        window.hasShadow = true
-        window.contentView = containerView
-        window.isMovableByWindowBackground = true
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
-
-        // Fade in
-        window.alphaValue = 0
-        window.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.35
-            window.animator().alphaValue = 1
-        }
-
-        currentWindow = window
-
-        // Auto dismiss after duration
-        dismissTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { _ in
-            Task { @MainActor in
-                dismiss()
-            }
-        }
-    }
-
-    @objc static func handleClose() {
-        dismiss()
-    }
-
-    static func dismiss() {
-        dismissTimer?.invalidate()
-        dismissTimer = nil
-
-        guard let window = currentWindow else { return }
-        currentWindow = nil
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.3
-            window.animator().alphaValue = 0
-        }, completionHandler: {
-            DispatchQueue.main.async {
-                window.orderOut(nil)
-            }
-        })
-    }
 }
 
 // MARK: - Hover Detail Panel

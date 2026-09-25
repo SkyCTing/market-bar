@@ -13,20 +13,15 @@ import AppKit
 /// 另外负责倒计时：有倒计时在跑时每秒把剩余时间推给人物显示在头顶。
 @MainActor
 final class ReminderCenter {
-    /// 气泡到弹窗的等待时间。用户可以调（菜单「提醒 → 提示后多久弹窗」），默认 30 秒
-    var acknowledgeWindow: TimeInterval = 30
+
     private static let snoozeInterval: TimeInterval = 600
     private static let maximumSnoozeCount = 6
 
     private let store: ReminderStore
     private let characterController: FloatingCharacterController
+    /// 呈现层。价格提醒也复用它 —— 这样「气泡 → 弹窗等待时间」全 app 只有一份
+    let presenter: AlertPresenter
     private var timer: Timer?
-    /// 每条提醒各自的「气泡 → 弹窗」待确认定时器。
-    /// 原来只有一格，任何一条提醒 fire() 都会把别人那格顶掉 —— 于是先响的那条
-    /// 弹窗永远不来，用户毫不知情。改成按 id 各存一份。
-    private var pendingConfirms: [UUID: Timer] = [:]
-    /// 「10 分钟后再提醒」的顺延定时器，留着是为了能取消
-    private var snoozeTimers: [UUID: Timer] = [:]
     /// 有倒计时在跑时才存在：每秒刷一下头顶那行
     private var countdownTicker: Timer?
     private var snoozeCounts: [UUID: Int] = [:]
@@ -35,6 +30,17 @@ final class ReminderCenter {
     init(store: ReminderStore, characterController: FloatingCharacterController) {
         self.store = store
         self.characterController = characterController
+        self.presenter = AlertPresenter(characterController: characterController)
+        // 顺延回来之前确认这条定时提醒还在
+        presenter.stillValid = { [weak store] id in
+            store?.reminders.contains(where: { $0.id == id }) ?? false
+        }
+    }
+
+    /// 气泡到弹窗的等待时间（转发给 presenter，菜单和测试都还用这个名字）
+    var acknowledgeWindow: TimeInterval {
+        get { presenter.acknowledgeWindow }
+        set { presenter.acknowledgeWindow = newValue }
     }
 
     func start() {
@@ -50,10 +56,7 @@ final class ReminderCenter {
     }
 
     private func cancelAllPending() {
-        for timer in pendingConfirms.values { timer.invalidate() }
-        pendingConfirms.removeAll()
-        for timer in snoozeTimers.values { timer.invalidate() }
-        snoozeTimers.removeAll()
+        presenter.cancelAll()
     }
 
     private var holidays: [String: String] {
@@ -161,80 +164,15 @@ final class ReminderCenter {
 
     /// 立即提醒（菜单里的「测试」也走这条）
     func fire(_ reminder: Reminder) {
-        // 兜底：正常存不出「两个都不勾」，但存档里的脏数据不该变成「静默不提醒」
-        let methods = reminder.methods.isEmpty ? Reminder.Methods.bubble : reminder.methods
-
-        // 人物被收起来时「宠物提示」整个不响：气泡看不见，只剩一声「叮」更让人困惑。
-        // 用户明确要求开会时完全隐藏就别有任何提示，所以连声音也一起省掉。
-        // 只勾了弹窗的不受影响 —— 那是另一条独立选择的通道
-        if methods.contains(.bubble), characterController.isVisible {
-            NSSound(named: "Sosumi")?.play()
-            characterController.say(reminder.body.isEmpty ? reminder.title : reminder.body)
-        }
-
-        guard methods.contains(.alert) else { return }
-
-        // 只勾了弹窗：直接弹（用户就是要被拦住，气泡没必要先飘一下）
-        guard methods.contains(.bubble) else {
-            presentModal(reminder)
-            return
-        }
-
-        // 两个都勾：先给一段时间让气泡说完，没人理再弹。
-        // 只顶掉**这一条**自己的待确认，不碰别人的
-        armPendingConfirm(for: reminder)
-    }
-
-    private func armPendingConfirm(for reminder: Reminder) {
-        pendingConfirms[reminder.id]?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: acknowledgeWindow, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.pendingConfirms[reminder.id] = nil
-                self.presentModal(reminder)
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        pendingConfirms[reminder.id] = timer
+        presenter.fire(
+            title: reminder.title,
+            body: reminder.body.isEmpty ? reminder.title : reminder.body,
+            methods: reminder.methods,
+            key: reminder.id
+        )
     }
 
     func acknowledge() {
-        cancelAllPending()
-    }
-
-    /// 置顶模态框。注意 runModal 会阻塞主线程一整轮（这期间金价刷新暂停），
-    /// 与 monthly-reminder.sh 的行为一致，可接受。
-    private func presentModal(_ reminder: Reminder) {
-        // 模态期间先停调度，避免堆叠
-        let alert = NSAlert()
-        alert.messageText = reminder.title
-        alert.informativeText = reminder.body
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "知道了")
-        alert.addButton(withTitle: "10 分钟后再提醒")
-        NSSound(named: "Sosumi")?.play()
-
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            let count = (snoozeCounts[reminder.id] ?? 0) + 1
-            snoozeCounts[reminder.id] = count
-            guard count < Self.maximumSnoozeCount else {
-                snoozeCounts[reminder.id] = 0
-                return
-            }
-            let timer = Timer.scheduledTimer(withTimeInterval: Self.snoozeInterval, repeats: false) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.snoozeTimers[reminder.id] = nil
-                    // 顺延期间这条提醒被删掉/清空了就别再响
-                    guard self.store.reminders.contains(where: { $0.id == reminder.id }) else { return }
-                    self.fire(reminder)
-                }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            snoozeTimers[reminder.id] = timer
-        } else {
-            snoozeCounts[reminder.id] = 0
-        }
+        presenter.cancelAll()
     }
 }
