@@ -10,8 +10,6 @@ final class ReminderDialogView: NSView {
     private let repeatPopup = NSPopUpButton()
     private let weekdayPopup = NSPopUpButton()
     private let monthDayPopup = NSPopUpButton()
-    private let weekdayLabel = NSTextField(labelWithString: "周几")
-    private let monthDayLabel = NSTextField(labelWithString: "几号")
     private let dayIntervalLabel = NSTextField(labelWithString: "天数")
     private let dayIntervalField = NSTextField()
     private let skipHolidaysCheckbox = NSButton(
@@ -50,17 +48,12 @@ final class ReminderDialogView: NSView {
         repeatPopup.action = #selector(repeatChanged)
         addSubview(repeatPopup)
 
-        weekdayLabel.frame = NSRect(x: 160, y: 93, width: 32, height: 18)
-        weekdayLabel.alignment = .right
-        addSubview(weekdayLabel)
-        weekdayPopup.frame = NSRect(x: 196, y: 88, width: 100, height: 25)
+        // 值本身已经说明是周几/几号（「周日」「1 号」），不再加多余的标签
+        weekdayPopup.frame = NSRect(x: 160, y: 88, width: 100, height: 25)
         weekdayPopup.addItems(withTitles: ["周日", "周一", "周二", "周三", "周四", "周五", "周六"])
         addSubview(weekdayPopup)
 
-        monthDayLabel.frame = NSRect(x: 160, y: 93, width: 32, height: 18)
-        monthDayLabel.alignment = .right
-        addSubview(monthDayLabel)
-        monthDayPopup.frame = NSRect(x: 196, y: 88, width: 100, height: 25)
+        monthDayPopup.frame = NSRect(x: 160, y: 88, width: 100, height: 25)
         monthDayPopup.addItems(withTitles: (1...31).map { "\($0) 号" })
         addSubview(monthDayPopup)
 
@@ -128,9 +121,7 @@ final class ReminderDialogView: NSView {
         let weekly = index == 1
         let monthly = index == 2
         let everyDays = index == 3
-        weekdayLabel.isHidden = !weekly
         weekdayPopup.isHidden = !weekly
-        monthDayLabel.isHidden = !monthly
         monthDayPopup.isHidden = !monthly
         dayIntervalLabel.isHidden = !everyDays
         dayIntervalField.isHidden = !everyDays
