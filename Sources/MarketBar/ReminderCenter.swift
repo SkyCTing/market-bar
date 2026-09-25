@@ -5,14 +5,16 @@ import AppKit
 /// 呈现方式按每条提醒自己勾的 `methods` 走（用户要求两种能各自单开、也能同时开）：
 /// - 只勾「宠物提示」：冒气泡 + 响一声
 /// - 只勾「弹窗」：直接弹置顶模态框
-/// - 两个都勾：先气泡，60 秒没人理再弹（弹窗会阻塞主线程一整轮，能不弹就不弹）
+/// - 两个都勾：先气泡，等一段时间（默认 30 秒，菜单里可调）没人理再弹
+///   —— 弹窗会阻塞主线程一整轮，能不弹就不弹
 ///
 /// 模态框里的「知道了 / 10 分钟后再提醒」顺延最多 6 次，沿用 monthly-reminder.sh 的语义。
 ///
 /// 另外负责倒计时：有倒计时在跑时每秒把剩余时间推给人物显示在头顶。
 @MainActor
 final class ReminderCenter {
-    private static let acknowledgeWindow: TimeInterval = 60
+    /// 气泡到弹窗的等待时间。用户可以调（菜单「提醒 → 提示后多久弹窗」），默认 30 秒
+    var acknowledgeWindow: TimeInterval = 30
     private static let snoozeInterval: TimeInterval = 600
     private static let maximumSnoozeCount = 6
 
@@ -164,7 +166,7 @@ final class ReminderCenter {
         }
 
         // 两个都勾：先给 60 秒让气泡说完，没人理再弹
-        pendingConfirm = Timer.scheduledTimer(withTimeInterval: Self.acknowledgeWindow, repeats: false) { [weak self] _ in
+        pendingConfirm = Timer.scheduledTimer(withTimeInterval: acknowledgeWindow, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in self?.presentModal(reminder) }
         }
         if let pendingConfirm { RunLoop.main.add(pendingConfirm, forMode: .common) }

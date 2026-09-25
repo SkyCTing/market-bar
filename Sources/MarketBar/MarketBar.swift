@@ -44,6 +44,29 @@ enum RefreshIntervalOption: Double, CaseIterable {
     }
 }
 
+/// 人物冒完气泡之后、等多久才弹置顶模态框（只在两种提醒方式都勾时才有意义）。
+///
+/// 用户 2026-09-25 反馈 60 秒太久，默认改成 30 秒，并且做成可调。
+enum ReminderAcknowledgeOption: Double, CaseIterable {
+    case ten = 10
+    case fifteen = 15
+    case thirty = 30
+    case fortyFive = 45
+    case sixty = 60
+    case ninety = 90
+    case twoMinutes = 120
+
+    static let defaultOption: ReminderAcknowledgeOption = .thirty
+
+    var title: String {
+        guard rawValue >= 60 else { return "\(Int(rawValue)) 秒" }
+        let minutes = Int(rawValue) / 60
+        let remainder = Int(rawValue) % 60
+        // 整除才说「N 分钟」，否则 90 秒会被说成「1 分钟」
+        return remainder == 0 ? "\(minutes) 分钟" : "\(minutes) 分 \(remainder) 秒"
+    }
+}
+
 struct ZheShangResponse: Decodable {
     let resultData: ResultData?
 
@@ -489,6 +512,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var selectedProvider: GoldProvider = .zheShang
     private var refreshInterval: RefreshIntervalOption = .one
+    /// 气泡到弹窗的等待时间（用户可调，默认 30 秒）
+    private var reminderAcknowledge: ReminderAcknowledgeOption = .defaultOption
     private var timer: Timer?
     private var currentPrice: Double = 0
     private var currentPriceInfo: PriceInfo = .empty
@@ -977,6 +1002,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add.target = self
         submenu.addItem(add)
 
+        let waitItem = NSMenuItem(title: "提示后多久弹窗", action: nil, keyEquivalent: "")
+        let waitSubmenu = NSMenu(title: "提示后多久弹窗")
+        for option in ReminderAcknowledgeOption.allCases {
+            let entry = NSMenuItem(
+                title: option.title,
+                action: #selector(selectReminderAcknowledge(_:)),
+                keyEquivalent: ""
+            )
+            entry.target = self
+            entry.representedObject = option
+            entry.state = option == reminderAcknowledge ? .on : .off
+            waitSubmenu.addItem(entry)
+        }
+        menu.setSubmenu(waitSubmenu, for: waitItem)
+        submenu.addItem(waitItem)
+
         let test = NSMenuItem(title: "测试：立即提醒", action: #selector(testReminder), keyEquivalent: "")
         test.target = self
         submenu.addItem(test)
@@ -998,6 +1039,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return reminder.summary
         }
         return "\(remaining)  \(reminder.summary)"
+    }
+
+    /// 气泡到弹窗的等待时间：只影响「两个提醒方式都勾」的那条路
+    @objc private func selectReminderAcknowledge(_ sender: NSMenuItem) {
+        guard let option = sender.representedObject as? ReminderAcknowledgeOption else { return }
+        reminderAcknowledge = option
+        reminderCenter.acknowledgeWindow = option.rawValue
+        rebuildMenu()
+        saveSettings()
     }
 
     @objc private func addReminder() {
@@ -1210,6 +1260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let lowThreshold = "lowPriceThreshold"
         static let floatingCharacterVisible = "floatingCharacterVisible"
         static let floatingCharacterSize = "floatingCharacterSize"
+        static let reminderAcknowledge = "reminderAcknowledgeWindow"
     }
 
     private func saveSettings() {
@@ -1228,6 +1279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         defaults.set(isFloatingCharacterVisible, forKey: SettingsKey.floatingCharacterVisible)
         defaults.set(floatingCharacterSize.rawValue, forKey: SettingsKey.floatingCharacterSize)
+        defaults.set(reminderAcknowledge.rawValue, forKey: SettingsKey.reminderAcknowledge)
     }
 
     private func loadSettings() {
@@ -1235,6 +1287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let providerStr = defaults.string(forKey: SettingsKey.provider) {
             selectedProvider = providerStr == "minSheng" ? .minSheng : .zheShang
         }
+        if let acknowledgeValue = defaults.object(forKey: SettingsKey.reminderAcknowledge) as? Double,
+           let option = ReminderAcknowledgeOption(rawValue: acknowledgeValue) {
+            reminderAcknowledge = option
+        }
+        reminderCenter.acknowledgeWindow = reminderAcknowledge.rawValue
         if let intervalValue = defaults.object(forKey: SettingsKey.refreshInterval) as? Double,
            let interval = RefreshIntervalOption(rawValue: intervalValue) {
             refreshInterval = interval

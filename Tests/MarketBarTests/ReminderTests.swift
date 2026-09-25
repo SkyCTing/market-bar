@@ -544,3 +544,56 @@ final class ReminderMethodsTests: XCTestCase {
         XCTAssertFalse(reminder.skipHolidays)
     }
 }
+
+// MARK: - 气泡到弹窗的等待时间
+
+final class ReminderAcknowledgeOptionTests: XCTestCase {
+    /// 用户 2026-09-25 明确要求：60 秒太久，默认 30 秒
+    func testDefaultIsThirtySeconds() {
+        XCTAssertEqual(ReminderAcknowledgeOption.defaultOption, .thirty)
+        XCTAssertEqual(ReminderAcknowledgeOption.defaultOption.rawValue, 30)
+    }
+
+    func testOptionsAreOrdered() {
+        let values = ReminderAcknowledgeOption.allCases.map(\.rawValue)
+
+        XCTAssertEqual(values, values.sorted())
+        XCTAssertTrue(values.contains(30), "默认那档必须在选项里，否则菜单选不中")
+    }
+
+    func testTitles() {
+        XCTAssertEqual(ReminderAcknowledgeOption.ten.title, "10 秒")
+        XCTAssertEqual(ReminderAcknowledgeOption.thirty.title, "30 秒")
+        XCTAssertEqual(ReminderAcknowledgeOption.fortyFive.title, "45 秒")
+        XCTAssertEqual(ReminderAcknowledgeOption.sixty.title, "1 分钟")
+        XCTAssertEqual(ReminderAcknowledgeOption.ninety.title, "1 分 30 秒", "90 秒说成「1 分钟」是错的")
+        XCTAssertEqual(ReminderAcknowledgeOption.twoMinutes.title, "2 分钟")
+    }
+
+    func testFallbackToDefaultForUnknownPersistedValue() {
+        XCTAssertNil(ReminderAcknowledgeOption(rawValue: 7), "存档里的陌生值应当解不出，由调用方回退默认")
+    }
+
+    @MainActor
+    func testCenterDefaultsToThirtySeconds() throws {
+        let suiteName = "AcknowledgeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let center = ReminderCenter(store: ReminderStore(defaults: defaults), characterController: FloatingCharacterController())
+
+        XCTAssertEqual(center.acknowledgeWindow, 30)
+    }
+
+    @MainActor
+    func testCenterTakesTheConfiguredValue() throws {
+        let suiteName = "AcknowledgeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let center = ReminderCenter(store: ReminderStore(defaults: defaults), characterController: FloatingCharacterController())
+        center.acknowledgeWindow = ReminderAcknowledgeOption.ten.rawValue
+
+        XCTAssertEqual(center.acknowledgeWindow, 10)
+    }
+}
