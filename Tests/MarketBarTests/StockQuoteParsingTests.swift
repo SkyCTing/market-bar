@@ -107,6 +107,9 @@ final class StockQuoteParsingTests: XCTestCase {
         XCTAssertEqual(quote.price, "--")
         XCTAssertEqual(quote.sessionDate, "2026-09-23")
         XCTAssertEqual(quote.volume, 1_234_567, accuracy: 1e-9)
+        XCTAssertEqual(
+            quote.quotedAt, ISO8601DateFormatter().date(from: "2026-09-23T08:14:37Z")
+        )
     }
 
     /// 正常行的成交量与交易日
@@ -135,9 +138,17 @@ final class StockQuoteParsingTests: XCTestCase {
 
         XCTAssertEqual(quotes["hk00700"]?.sessionDate, "2026-09-25")
         XCTAssertEqual(quotes["hk00700"]?.price, "436.600")
+        XCTAssertEqual(
+            quotes["hk00700"]?.quotedAt,
+            ISO8601DateFormatter().date(from: "2026-09-25T08:08:20Z")
+        )
         XCTAssertEqual(quotes["usBRK.B"]?.sessionDate, "2026-09-25")
         XCTAssertEqual(quotes["usBRK.B"]?.raisePercent ?? 0, 0.0062, accuracy: 1e-9)
         XCTAssertEqual(quotes["usBRK.B"]?.volume, 990_479)
+        XCTAssertEqual(
+            quotes["usBRK.B"]?.quotedAt,
+            ISO8601DateFormatter().date(from: "2026-09-25T15:49:40Z")
+        )
         XCTAssertTrue(GoldPriceService.parseStockQuotes(
             payload(record(code: "usBRK.B", bareCode: "BRK.A.N", price: "504.34",
                            raiseValue: "3", percent: "0.6")),
@@ -161,6 +172,8 @@ final class StockQuoteParsingTests: XCTestCase {
             let quote = try XCTUnwrap(quotes[entry.code], "接口未返回 \(entry.code)")
             XCTAssertNotNil(quote.numericPrice, "\(entry.code) 无有效价格")
             XCTAssertFalse(quote.sessionDate.isEmpty, "\(entry.code) 无有效交易日期")
+            let time = try XCTUnwrap(quote.quotedAt, "\(entry.code) 无法解析报价时间")
+            XCTAssertEqual(StockMarket.forCode(entry.code)?.dateString(for: time), quote.sessionDate)
         }
     }
 

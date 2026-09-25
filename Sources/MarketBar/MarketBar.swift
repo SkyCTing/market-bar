@@ -190,6 +190,8 @@ struct StockQuote: Sendable {
     let volume: Double
     /// 行情时间戳所属的交易日 `2026-09-23`；解析失败为空串
     let sessionDate: String
+    /// 腾讯原始时间戳按标的所属市场的当地时间解析；缺失时不冒充实时行情
+    var quotedAt: Date? = nil
 
     /// 数值价格。`price` 是已格式化的字符串，`"--"` 表示无数据 ——
     /// 阈值比较要用数值，别在每个判定点各写一遍 `Double(...)` 加哨兵判断
@@ -202,7 +204,8 @@ struct StockQuote: Sendable {
         code: String,
         name: String,
         volume: Double = 0,
-        sessionDate: String = ""
+        sessionDate: String = "",
+        quotedAt: Date? = nil
     ) -> StockQuote {
         StockQuote(
             code: code,
@@ -211,7 +214,8 @@ struct StockQuote: Sendable {
             raise: 0,
             raisePercent: 0,
             volume: volume,
-            sessionDate: sessionDate
+            sessionDate: sessionDate,
+            quotedAt: quotedAt
         )
     }
 }
@@ -359,6 +363,7 @@ final class GoldPriceService: Sendable {
             // 否则停牌行的 sessionDate 为空，日线缓存的键就永远是空的，永远不会去拉。
             let volume = Double(fields[6]) ?? 0
             let sessionDate = TradingSession.sessionDate(fromQuoteTimestamp: fields[30]) ?? ""
+            let quotedAt = market.quoteTime(from: fields[30])
 
             // 停牌、未开盘或数据异常时价格是 0.000 / 空，回落到 "--" 占位
             guard let price = Double(fields[3]), price.isFinite, price > 0 else {
@@ -366,7 +371,8 @@ final class GoldPriceService: Sendable {
                     code: entry.code,
                     name: entry.name,
                     volume: volume,
-                    sessionDate: sessionDate
+                    sessionDate: sessionDate,
+                    quotedAt: quotedAt
                 )
                 continue
             }
@@ -378,7 +384,8 @@ final class GoldPriceService: Sendable {
                 raise: Double(fields[31]) ?? 0,
                 raisePercent: (Double(fields[32]) ?? 0) / 100,  // 接口给的是百分数，面板要小数
                 volume: volume,
-                sessionDate: sessionDate
+                sessionDate: sessionDate,
+                quotedAt: quotedAt
             )
         }
         return quotes
@@ -1468,6 +1475,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     showsProfitLoss: showProfit
                 )
             },
+            holidays: holidays,
             unread: unreadCounts
         )
     }
@@ -1585,6 +1593,7 @@ struct HoverPanelData {
     let alertInfo: String
     let market: MarketData
     let stocks: [StockRow]
+    let holidays: [String: String]
     let unread: UnreadBadge.Counts
 }
 
@@ -1788,10 +1797,12 @@ final class HoverPanel {
 
         for row in data.stocks {
             let quote = row.quote
+            let now = Date()
 
             // 名称单独一列；倍数与「放量/缩量」各占一列，这样数字才能竖向对齐
             let tl = makeStockTitleLabel()
-            tl.stringValue = row.displayName
+            tl.stringValue = row.displayName(at: now, holidays: data.holidays)
+            tl.toolTip = row.quoteTooltip(at: now, holidays: data.holidays)
 
             let volumeLabel = makeStockCell(
                 StockVolume.volumeText(row.volumeRatio),
@@ -1806,6 +1817,7 @@ final class HoverPanel {
                 weight: .medium,
                 color: raisedColor(quote.raise, fallback: valueColor)
             )
+            vl.toolTip = tl.toolTip
             let profitLabel = makeStockCell(
                 row.profitLossText,
                 weight: .medium,
@@ -2056,16 +2068,21 @@ final class HoverPanel {
         marketValueLabels["dxy"]?.stringValue = formatValueWithPercent(price: m.dollarIndex.price, raisePercent: m.dollarIndex.raisePercent)
         marketValueLabels["dxy"]?.textColor = raisedColor(m.dollarIndex.raise, fallback: fallback)
 
+        weChatBadge?.update(data.unread.weChat)
+        weChatSecondBadge?.update(data.unread.weChatSecond)
+
         for row in data.stocks {
             let quote = row.quote
+            let now = Date()
+            let tooltip = row.quoteTooltip(at: now, holidays: data.holidays)
             stockValueLabels[quote.code]?.stringValue =
                 formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
             stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
-            stockTitleLabels[quote.code]?.stringValue = row.displayName
-            weChatBadge?.update(data.unread.weChat)
-        weChatSecondBadge?.update(data.unread.weChatSecond)
+            stockValueLabels[quote.code]?.toolTip = tooltip
+            stockTitleLabels[quote.code]?.stringValue = row.displayName(at: now, holidays: data.holidays)
+            stockTitleLabels[quote.code]?.toolTip = tooltip
 
-        stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
+            stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
             stockVolumeLabels[quote.code]?.textColor =
                 HoverPalette.volumeColor(for: StockVolume.word(for: row.volumeRatio))
 

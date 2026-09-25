@@ -64,4 +64,61 @@ final class StockMarketTests: XCTestCase {
             sessionDate: "2026-09-25", maximumAgeDays: 10
         ), 300)
     }
+
+    func testTencentQuoteTimesUseEachMarketsActualTimeZone() {
+        XCTAssertEqual(
+            StockMarket.mainland.quoteTime(from: "20260925094500"),
+            date("2026-09-25T01:45:00Z")
+        )
+        XCTAssertEqual(
+            StockMarket.hongKong.quoteTime(from: "2026/09/25 14:03:21"),
+            date("2026-09-25T06:03:21Z")
+        )
+        XCTAssertEqual(
+            StockMarket.unitedStates.quoteTime(from: "2026-07-01 09:45:00"),
+            date("2026-07-01T13:45:00Z")
+        )
+        XCTAssertEqual(
+            StockMarket.unitedStates.quoteTime(from: "2026-01-05 09:45:00"),
+            date("2026-01-05T14:45:00Z")
+        )
+        XCTAssertNil(StockMarket.unitedStates.quoteTime(from: "2026-07-01 25:45:00"))
+        XCTAssertNil(StockMarket.hongKong.quoteTime(from: "yesterday"))
+    }
+
+    func testQuoteFreshnessSeparatesCurrentDelayedClosedAndPreviousDay() {
+        let time = date("2026-07-01T14:01:00Z")
+        let quote = StockQuote(
+            code: "usAAPL", name: "苹果", price: "338.35", raise: 2.43, raisePercent: 0.0072,
+            volume: 100, sessionDate: "2026-07-01", quotedAt: time
+        )
+        XCTAssertEqual(QuoteFreshness.evaluate(quote, at: time.addingTimeInterval(180)), .current)
+        XCTAssertEqual(QuoteFreshness.evaluate(quote, at: time.addingTimeInterval(181)), .delayed)
+        XCTAssertEqual(QuoteFreshness.evaluate(quote, at: date("2026-07-01T21:00:00Z")), .closed)
+        XCTAssertEqual(QuoteFreshness.evaluate(quote, at: date("2026-07-02T14:05:00Z")), .previousSession)
+        XCTAssertEqual(QuoteFreshness.evaluate(quote, at: time.addingTimeInterval(-61)), .unknownTime)
+
+        let row = StockRow(quote: quote, volumeRatio: nil)
+        XCTAssertEqual(row.displayName(at: time.addingTimeInterval(181)), "延迟 · 苹果 · US")
+        XCTAssertTrue(row.quoteTooltip(at: time.addingTimeInterval(181)).contains(
+            "报价时间：2026-07-01 10:01:00（纽约时间）"
+        ))
+    }
+
+    func testMissingTimePriceAndHolidayAreNeverLabeledCurrent() {
+        let active = date("2026-09-25T02:00:00Z")
+        let noTime = StockQuote(
+            code: "sh600036", name: "招商银行", price: "40.69", raise: 0.09, raisePercent: 0.0022,
+            volume: 100, sessionDate: "2026-09-25"
+        )
+        XCTAssertEqual(QuoteFreshness.evaluate(noTime, at: active), .unknownTime)
+        XCTAssertEqual(QuoteFreshness.evaluate(
+            .placeholder(code: "sh600036", name: "招商银行"), at: active
+        ), .unavailable)
+        var holidayQuote = noTime
+        holidayQuote.quotedAt = active
+        XCTAssertEqual(QuoteFreshness.evaluate(
+            holidayQuote, at: active, holidays: ["2026-09-25": "假日"]
+        ), .closed)
+    }
 }
