@@ -968,56 +968,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: "提醒", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "提醒")
 
-        // 菜单里只列前几条，多了就去「管理提醒…」里看 —— 免得下拉拉老长
-        for reminder in reminderStore.reminders.prefix(Self.menuListLimit) {
-            let entry = NSMenuItem(
+        // 菜单里只列前几条，多了就去「管理提醒…」里看 —— 免得下拉拉老长。
+        // 两类**合起来**算上限：各自 prefix 的话能列出十条，而「还有 N 条」按总数>5 判，
+        // 两边对不上（列表比上限长，却不显示还有多少条）
+        var combined: [NSMenuItem] = reminderStore.reminders.map { reminder in
+            let item = NSMenuItem(
                 title: menuTitle(for: reminder),
                 action: #selector(editReminder(_:)),
                 keyEquivalent: ""
             )
-            entry.target = self
-            entry.representedObject = reminder
-            submenu.addItem(entry)
+            item.target = self
+            item.representedObject = reminder
+            return item
         }
-        if reminderStore.reminders.count > Self.menuListLimit {
-            let more = NSMenuItem(
-                title: "还有 \(reminderStore.reminders.count - Self.menuListLimit) 条…",
-                action: #selector(showReminderList),
-                keyEquivalent: ""
-            )
-            more.target = self
-            submenu.addItem(more)
-        }
-        if !reminderStore.reminders.isEmpty {
-            submenu.addItem(.separator())
-        }
-
-        // 价格提醒也列在这儿 —— 对用户来说都是「提醒」，没必要分两个菜单
-        for alert in priceAlertStore.alerts.prefix(Self.menuListLimit) {
-            let entry = NSMenuItem(
+        combined += priceAlertStore.alerts.map { alert in
+            let item = NSMenuItem(
                 title: "\(alert.summary(displayName: displayName(for: alert.target))) · \(alert.methods.title)",
                 action: #selector(editPriceAlert(_:)),
                 keyEquivalent: ""
             )
-            entry.target = self
-            entry.representedObject = alert
-            submenu.addItem(entry)
+            item.target = self
+            item.representedObject = alert
+            return item
         }
-        let totalCount = reminderStore.reminders.count + priceAlertStore.alerts.count
-        if totalCount > Self.menuListLimit {
+
+        for item in combined.prefix(Self.menuListLimit) { submenu.addItem(item) }
+        if combined.count > Self.menuListLimit {
             let more = NSMenuItem(
-                title: "还有 \(totalCount - Self.menuListLimit) 条…",
+                title: "还有 \(combined.count - Self.menuListLimit) 条…",
                 action: #selector(showReminderList),
                 keyEquivalent: ""
             )
             more.target = self
             submenu.addItem(more)
         }
-        if totalCount > 0 { submenu.addItem(.separator()) }
+        if !combined.isEmpty { submenu.addItem(.separator()) }
 
-        let add = NSMenuItem(title: "添加提醒…", action: #selector(addReminder), keyEquivalent: "")
-        add.target = self
-        submenu.addItem(add)
+        // 定时和倒计时合一个入口 —— 表单里有「定时 / 倒计时」的分段控件可以当场切，
+        // 菜单再分两个是重复的。价格是另一张表，单独给一个入口
+        submenu.addItem(makeAddItem(title: "添加提醒…", action: #selector(addReminder)))
+        submenu.addItem(makeAddItem(title: "添加价格提醒…", action: #selector(addPriceAlert)))
 
         let manage = NSMenuItem(title: "管理提醒…", action: #selector(showReminderList), keyEquivalent: "")
         manage.target = self
@@ -1119,26 +1109,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderList?.refresh(reminders: reminderStore.reminders, priceAlerts: priceAlertStore.alerts)
     }
 
-    /// 「添加提醒…」先问一句要哪种触发方式，再开对应的表单。
-    ///
-    /// 三种共用同一个入口，菜单里就不必并列「提醒」和「价格提醒」两个子菜单了。
+    private func makeAddItem(title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
     @objc private func addReminder() {
-        let picker = NSAlert()
-        picker.messageText = "添加提醒"
-        picker.informativeText = "先选一种触发方式"
-        picker.addButton(withTitle: "继续")
-        picker.addButton(withTitle: "取消")
-
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 25))
-        popup.addItems(withTitles: ["定时（某个时刻）", "倒计时（从现在起一段时长）", "价格（金价或股票的阈值）"])
-        picker.accessoryView = popup
-
-        guard picker.runModal() == .alertFirstButtonReturn else { return }
-        switch popup.indexOfSelectedItem {
-        case 1: showReminderDialog(editing: nil, initialKind: .countdown)
-        case 2: showPriceAlertDialog(editing: nil)
-        default: showReminderDialog(editing: nil, initialKind: .scheduled)
-        }
+        showReminderDialog(editing: nil)
     }
 
     @objc private func editReminder(_ sender: NSMenuItem) {
@@ -1174,7 +1152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 添加 / 编辑提醒的对话框：定时（时刻 + 重复）或倒计时（时长 + 循环），
     /// 外加文案与两种提醒方式（宠物提示 / 弹窗）
-    private func showReminderDialog(editing reminder: Reminder?, initialKind: Reminder.Kind = .scheduled) {
+    private func showReminderDialog(editing reminder: Reminder?) {
         let alert = NSAlert()
         alert.messageText = reminder == nil ? "添加提醒" : "编辑提醒"
         alert.informativeText = reminder == nil
@@ -1184,7 +1162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "取消")
         if reminder != nil { alert.addButton(withTitle: "删除") }
 
-        let form = ReminderDialogView(reminder: reminder, initialKind: initialKind)
+        let form = ReminderDialogView(reminder: reminder)
         alert.accessoryView = form
         alert.window.initialFirstResponder = form.firstResponderControl
 

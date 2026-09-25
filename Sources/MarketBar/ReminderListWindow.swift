@@ -24,9 +24,8 @@ enum ReminderListEntry: Equatable {
 
 @MainActor
 final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
-    /// 点了「添加提醒…」
+    /// 提醒（定时/倒计时在表单里切）与价格提醒各一个入口
     var onAddReminder: (() -> Void)?
-    /// 点了「添加价格提醒…」
     var onAddPriceAlert: (() -> Void)?
     /// 双击某一行 / 点「编辑」
     var onEdit: ((ReminderListEntry) -> Void)?
