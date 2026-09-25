@@ -1416,12 +1416,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let isOverButton = buttonRect.contains(mouseLocation)
 
-        let isOverPanel: Bool
-        if let panel = hoverPanel, panel.isVisible {
-            isOverPanel = panel.frame.contains(mouseLocation)
-        } else {
-            isOverPanel = false
-        }
+        let isOverPanel = hoverPanel.map {
+            $0.isVisible && HoverPanelInteraction.contains(
+                mouseLocation, button: buttonRect, panel: $0.frame
+            )
+        } ?? false
 
         if isOverButton && (hoverPanel == nil || !hoverPanel!.isVisible) {
             showHoverPanel(below: buttonRect)
@@ -1579,6 +1578,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateHoverPanelContent() {
         hoverPanel?.updateContent(data: buildHoverPanelData())
+    }
+}
+
+enum HoverPanelInteraction {
+    static func contains(_ point: NSPoint, button: NSRect, panel: NSRect) -> Bool {
+        if button.contains(point) || panel.contains(point) { return true }
+        guard panel.maxY <= button.minY else { return false }
+        let left = max(button.minX, panel.minX)
+        let right = min(button.maxX, panel.maxX)
+        guard right > left else { return false }
+        return NSRect(
+            x: left, y: panel.maxY,
+            width: right - left, height: button.minY - panel.maxY
+        ).contains(point)
     }
 }
 
