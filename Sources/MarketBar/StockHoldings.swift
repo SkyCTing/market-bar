@@ -99,6 +99,18 @@ enum HoldingFormat {
         return (yuan > 0 ? "+" : "-") + grouped(String(yuan.magnitude))
     }
 
+    /// 成本：最多 3 位小数，末尾的 0 去掉。
+    ///
+    /// 基金/ETF 的持仓成本常常是 3 位（1.234），只留 2 位的话
+    /// **填进去的值会在下次编辑格子时被静默四舍五入掉**。
+    static func cost(_ cost: Double?) -> String {
+        guard let cost, cost > 0, cost.isFinite else { return "" }
+        var text = String(format: "%.3f", cost)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text
+    }
+
     /// 三位一组。只喂纯数字串。
     static func grouped(_ digits: String) -> String {
         guard digits.count > 3 else { return digits }

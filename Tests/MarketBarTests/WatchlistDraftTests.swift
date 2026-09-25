@@ -318,8 +318,27 @@ final class WatchlistCostTests: XCTestCase {
     }
 
     func testCostText() {
-        XCTAssertEqual(WatchlistDraft.costText(38.5), "38.50")
+        XCTAssertEqual(WatchlistDraft.costText(38.5), "38.5", "末尾的 0 去掉")
         XCTAssertEqual(WatchlistDraft.costText(nil), "")
+        XCTAssertEqual(WatchlistDraft.costText(0), "")
+    }
+
+    /// 基金/ETF 的成本常常是 3 位小数。只显示 2 位的话，
+    /// 填进去的值会在下次编辑那个格子时被静默四舍五入掉
+    func testCostSupportsThreeDecimals() {
+        XCTAssertEqual(WatchlistDraft.costText(1.234), "1.234")
+        XCTAssertEqual(WatchlistDraft.costText(1.2), "1.2")
+        XCTAssertEqual(WatchlistDraft.parseCost("1.234"), 1.234)
+
+        // 走一遍「显示 → 解析」不能丢精度
+        let original = 1.234
+        let roundTripped = WatchlistDraft.parseCost(WatchlistDraft.costText(original))
+        XCTAssertEqual(roundTripped, original)
+    }
+
+    /// 超过 3 位的按 3 位四舍五入（再多也没意义）
+    func testCostRoundsBeyondThreeDecimals() {
+        XCTAssertEqual(WatchlistDraft.costText(1.23456), "1.235")
     }
 
     /// 浮动盈亏 =（现价 − 成本）× 股数；缺任何一项都是 nil（不显示 0）

@@ -190,8 +190,7 @@ struct WatchlistDraft: Equatable {
 
     /// 成本列怎么显示（和面板同一口径，复制回去能原样解析）
     static func costText(_ cost: Double?) -> String {
-        guard let cost, cost > 0 else { return "" }
-        return String(format: "%.2f", cost)
+        HoldingFormat.cost(cost)
     }
 
     /// 浮动盈亏 =（现价 − 成本）× 股数。缺成本或缺价格就是 nil（不显示 0）

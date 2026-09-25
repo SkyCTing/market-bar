@@ -193,7 +193,7 @@ struct StockRow: Sendable {
     /// 面板单元格文本：无持仓时是**空串**（留白），不是 "--"
     var sharesText: String { shares.map(HoldingFormat.sharesText) ?? "" }
     var profitLossText: String { profitLoss.map(HoldingFormat.profitLossText) ?? "" }
-    var costText: String { cost.map { String(format: "%.2f", $0) } ?? "" }
+    var costText: String { HoldingFormat.cost(cost) }
     var floatingProfitText: String { floatingProfit.map(HoldingFormat.profitLossText) ?? "" }
 }
 
