@@ -156,6 +156,30 @@ final class StockHoldingsTests: XCTestCase {
         XCTAssertEqual(row.sharesText, "880,000")
         XCTAssertEqual(row.profitLossText, "-6,160")
     }
+
+    @MainActor
+    func testOverseasPositionUsesNativeCurrencyWithoutMixingIntoYuanTotal() {
+        let previous = StockHoldings.sharesByCode
+        let previousCosts = StockHoldings.costsByCode
+        defer {
+            StockHoldings.sharesByCode = previous
+            StockHoldings.costsByCode = previousCosts
+        }
+        StockHoldings.sharesByCode = ["sh600036": 100, "usAAPL": 10, "hk00700": 20]
+        StockHoldings.costsByCode = ["usAAPL": 300]
+        let a = quote(code: "sh600036", price: "40", raise: 1)
+        let us = quote(code: "usAAPL", price: "338", raise: 2.43)
+        let hk = quote(code: "hk00700", price: "436", raise: -1.8)
+
+        XCTAssertEqual(StockRow(quote: us, volumeRatio: nil).profitLossText, "USD +24")
+        XCTAssertEqual(StockRow(quote: hk, volumeRatio: nil).profitLossText, "HKD -36")
+        XCTAssertEqual(StockRow(quote: us, volumeRatio: nil).displayName, "测试标的 · US")
+        XCTAssertEqual(StockRow(quote: hk, volumeRatio: nil).displayName, "测试标的 · HK")
+        XCTAssertTrue(StockRow(quote: us, volumeRatio: nil).floatingProfitText.hasPrefix("USD +380"))
+        XCTAssertEqual(StockProfitLoss.totalToday(quotesByCode: [
+            "sh600036": a, "usAAPL": us, "hk00700": hk,
+        ]), 100)
+    }
 }
 
 /// 配置文件（自选清单 + 持仓）

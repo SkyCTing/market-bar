@@ -24,12 +24,12 @@ enum StockSearch {
 
     /// 拿去搜的关键词。
     ///
-    /// ⚠️ 接口**只认裸的 6 位数字**：`q=sh600519` 返回 `v_hint="N"`，
-    /// `q=600519` 才有结果。所以带交易所前缀的完整代码要先摘掉前缀再搜。
+    /// 接口只认不带市场前缀的代码。
     static func keyword(forCode code: String) -> String {
-        let lower = code.lowercased()
-        guard WatchlistDraft.isValidCode(lower) else { return code }
-        return String(lower.dropFirst(2))
+        let normalized = WatchlistDraft.normalizeCode(code)
+        guard WatchlistDraft.isValidCode(normalized),
+              code.lowercased().hasPrefix(String(normalized.prefix(2))) else { return code }
+        return String(normalized.dropFirst(2))
     }
 
     static func url(keyword: String) -> URL? {
@@ -72,10 +72,10 @@ enum StockSearch {
             guard fields.count >= 3 else { continue }
 
             let market = fields[0].lowercased()
-            // 面板只认沪深两市。港股/美股/场外基金搜出来也用不了（代码对不上行情接口）
-            guard market == "sh" || market == "sz" else { continue }
-
-            let code = market + fields[1].trimmingCharacters(in: .whitespaces)
+            guard ["sh", "sz", "bj", "hk", "us"].contains(market) else { continue }
+            let code = WatchlistDraft.normalizeCode(
+                market + fields[1].trimmingCharacters(in: .whitespaces)
+            )
             guard WatchlistDraft.isValidCode(code), seen.insert(code).inserted else { continue }
 
             results.append(StockSearchResult(

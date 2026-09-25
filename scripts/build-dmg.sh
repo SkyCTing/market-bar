@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="MarketBar"
 BUNDLE_ID="com.marketbar.app"
-VERSION="1.0.3"
+VERSION="1.0.4"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/.build"
 DIST_DIR="${PROJECT_DIR}/dist"
@@ -21,8 +21,11 @@ if [ ! -f "${BINARY_PATH}" ]; then
 fi
 echo "✅ Binary built successfully"
 
-# Clean previous dist
-rm -rf "${DIST_DIR}"
+# Preserve earlier versioned DMGs instead of clearing the whole dist directory.
+mkdir -p "${DIST_DIR}"
+if [ -d "${APP_BUNDLE}" ]; then
+    rm -r "${APP_BUNDLE}"
+fi
 mkdir -p "${APP_BUNDLE}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
@@ -92,6 +95,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << EOF
 EOF
 
 echo "✅ App bundle created at ${APP_BUNDLE}"
+codesign --force --deep --sign - "${APP_BUNDLE}"
 
 # Create DMG
 echo "💿 Creating DMG..."
@@ -99,7 +103,9 @@ echo "💿 Creating DMG..."
 DMG_TEMP="${DIST_DIR}/dmg-staging"
 DMG_PATH="${DIST_DIR}/${DMG_NAME}.dmg"
 
-rm -rf "${DMG_TEMP}"
+if [ -d "${DMG_TEMP}" ]; then
+    rm -r "${DMG_TEMP}"
+fi
 mkdir -p "${DMG_TEMP}"
 
 # Copy app to staging
@@ -116,7 +122,7 @@ hdiutil create \
     -format UDZO \
     "${DMG_PATH}" 2>&1
 
-rm -rf "${DMG_TEMP}"
+rm -r "${DMG_TEMP}"
 
 echo ""
 echo "🎉 Done! DMG created at:"

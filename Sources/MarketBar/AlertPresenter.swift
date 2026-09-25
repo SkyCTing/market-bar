@@ -40,10 +40,9 @@ final class AlertPresenter {
         // 兜底：正常存不出「两个都不勾」，但存档里的脏数据不该变成「静默不提醒」
         let methods = requested.isEmpty ? Reminder.Methods.bubble : requested
 
-        // 人物被收起来时「宠物提示」整个不响：气泡看不见，只剩一声「叮」更让人困惑。
-        // 用户明确要求开会时完全隐藏就别有任何提示，所以连声音也一起省掉。
-        // 只勾了弹窗的不受影响 —— 那是另一条独立选择的通道
-        if methods.contains(.bubble), characterController.isVisible {
+        guard Self.canPresent(methods, characterVisible: characterController.isVisible) else { return }
+
+        if methods.contains(.bubble) {
             NSSound(named: "Sosumi")?.play()
             characterController.say(body.isEmpty ? title : body)
         }
@@ -61,6 +60,10 @@ final class AlertPresenter {
         armPendingConfirm(title: title, body: body, methods: methods, key: key)
     }
 
+    static func canPresent(_ methods: Reminder.Methods, characterVisible: Bool) -> Bool {
+        characterVisible || !methods.contains(.bubble)
+    }
+
     /// 取消所有还在等确认 / 等顺延的提醒（配置变了、或者用户清空了）
     func cancelAll() {
         for timer in pendingConfirms.values { timer.invalidate() }
@@ -75,6 +78,7 @@ final class AlertPresenter {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.pendingConfirms[key] = nil
+                guard Self.canPresent(methods, characterVisible: self.characterController.isVisible) else { return }
                 self.presentModal(title: title, body: body, methods: methods, key: key)
             }
         }

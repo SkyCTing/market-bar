@@ -128,9 +128,21 @@ final class WatchlistDraftTests: XCTestCase {
     }
 
     func testNormalizeCodeDoesNotInventPrefixForGarbage() {
-        XCTAssertEqual(WatchlistDraft.normalizeCode("12345"), "12345")     // 位数不对
         XCTAssertEqual(WatchlistDraft.normalizeCode("60003x"), "60003x")   // 不是纯数字
-        XCTAssertEqual(WatchlistDraft.normalizeCode("abc"), "abc")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("!abc"), "!abc")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("1234"), "1234")
+    }
+
+    func testNormalizesHongKongAndUnitedStatesCodes() {
+        XCTAssertEqual(WatchlistDraft.normalizeCode("00700"), "hk00700")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("HK03968"), "hk03968")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("AAPL"), "usAAPL")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("usbrk.b.n"), "usBRK.B")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("uscihky.ps"), "usCIHKY")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("USO"), "usUSO")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("SHY"), "usSHY")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("HKEX"), "usHKEX")
+        XCTAssertEqual(WatchlistDraft.normalizeCode("sh60003x"), "sh60003x")
     }
 
     func testIsValidCode() {
@@ -139,7 +151,12 @@ final class WatchlistDraftTests: XCTestCase {
         XCTAssertTrue(WatchlistDraft.isValidCode("bj830799"))
 
         XCTAssertFalse(WatchlistDraft.isValidCode("600036"), "缺前缀")
-        XCTAssertFalse(WatchlistDraft.isValidCode("hk00700"), "不支持的交易所")
+        XCTAssertTrue(WatchlistDraft.isValidCode("hk00700"))
+        XCTAssertTrue(WatchlistDraft.isValidCode("usAAPL"))
+        XCTAssertTrue(WatchlistDraft.isValidCode("usBRK.B"))
+        XCTAssertFalse(WatchlistDraft.isValidCode("hk0070"))
+        XCTAssertFalse(WatchlistDraft.isValidCode("usAAPL&x=1"))
+        XCTAssertFalse(WatchlistDraft.isValidCode("us123"))
         XCTAssertFalse(WatchlistDraft.isValidCode("sh60003"), "位数不对")
         XCTAssertFalse(WatchlistDraft.isValidCode("sh6000366"), "位数不对")
         XCTAssertFalse(WatchlistDraft.isValidCode("sh60003x"))

@@ -65,5 +65,13 @@ final class HoverPanelLayoutTests: XCTestCase {
             width("-1,234,567", valueFont),
             HoverPanel.profitColumnWidth + 0.5
         )
+        XCTAssertLessThanOrEqual(
+            width("USD -1,234,567", valueFont),
+            HoverPanel.profitColumnWidth + 0.5
+        )
+        XCTAssertLessThanOrEqual(
+            width("HKD -1,234,567  +12.34%", valueFont),
+            HoverPanel.floatingColumnWidth + 0.5
+        )
     }
 }

@@ -50,13 +50,18 @@ final class StockSearchTests: XCTestCase {
         XCTAssertTrue(StockSearch.parse("完全不是这个格式").isEmpty)
     }
 
-    /// 港股、美股、场外基金搜出来也用不了：面板的行情接口只认沪深代码
+    /// 沪深港美都能查价；场外基金仍然不可用。
     func testFiltersOutMarketsThePanelCannotQuote() {
         let body = #"v_hint="sh~600036~招商银行~zsyh~GP-A^hk~03968~招商银行~zsyh~GP^us~cihky.ps~招商银行~zsyh~GP^jj~014840~招商裕华混合~zsyhhh~KJ""#
 
         let results = StockSearch.parse(body)
 
-        XCTAssertEqual(results.map(\.code), ["sh600036"], "只留沪深")
+        XCTAssertEqual(results.map(\.code), ["sh600036", "hk03968", "usCIHKY"])
+    }
+
+    func testParsesUsExchangeSuffixWithoutDroppingClassShare() {
+        let body = #"v_hint="us~aapl.oq~苹果~pg~GP^us~brk.b.n~伯克希尔B~bkxb~GP^hk~00700~腾讯控股~txkg~GP""#
+        XCTAssertEqual(StockSearch.parse(body).map(\.code), ["usAAPL", "usBRK.B", "hk00700"])
     }
 
     func testKeepsShenzhenCodes() {
@@ -141,6 +146,9 @@ final class StockSearchTests: XCTestCase {
     func testKeywordForCode() {
         XCTAssertEqual(StockSearch.keyword(forCode: "sh600519"), "600519")
         XCTAssertEqual(StockSearch.keyword(forCode: "SZ000001"), "000001")
+        XCTAssertEqual(StockSearch.keyword(forCode: "hk00700"), "00700")
+        XCTAssertEqual(StockSearch.keyword(forCode: "usAAPL"), "AAPL")
+        XCTAssertEqual(StockSearch.keyword(forCode: "usBRK.B"), "BRK.B")
         XCTAssertEqual(StockSearch.keyword(forCode: "600519"), "600519", "本来就是裸代码")
         XCTAssertEqual(StockSearch.keyword(forCode: "招商银行"), "招商银行", "不是代码就别动")
         XCTAssertEqual(StockSearch.keyword(forCode: "sh6005"), "sh6005", "位数不对，不当代码处理")

@@ -81,7 +81,9 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
 
     /// 摘要：`📈 sh600036 ≥ 45.00`（菜单里显示用）
     func summary(displayName: String) -> String {
-        "\(direction.arrow) \(displayName) \(direction.symbol) \(String(format: "%.2f", threshold))"
+        let currency = target.code.flatMap(StockMarket.forCode)?.currency
+        let suffix = currency.flatMap { $0 == "CNY" ? nil : " \($0)" } ?? ""
+        return "\(direction.arrow) \(displayName) \(direction.symbol) \(String(format: "%.2f", threshold))\(suffix)"
     }
 
     /// 真正要显示的正文
@@ -94,7 +96,10 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
         let formatted = String(format: "%.2f", price)
         switch alert.target {
         case .gold: return "金价: \(formatted)"
-        case .stock(let code): return "\(code): \(formatted)"
+        case .stock(let code):
+            let currency = StockMarket.forCode(code)?.currency
+            let suffix = currency.flatMap { $0 == "CNY" ? nil : " \($0)" } ?? ""
+            return "\(code): \(formatted)\(suffix)"
         }
     }
 }

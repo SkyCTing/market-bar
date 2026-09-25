@@ -52,7 +52,7 @@ enum StockProfitLoss {
         return quote.raise * Double(shares)
     }
 
-    /// 组合当日盈亏合计（元）。
+    /// 组合人民币当日盈亏合计；港币和美元不得直接相加进人民币举牌数字。
     ///
     /// 按持仓表遍历（不是按行情字典）：缺行情、无持仓、行情异常的都跳过，
     /// 一个有效标的都没有时返回 nil —— 浮动人物据此退回单行，而不是显示「0」。
@@ -62,7 +62,8 @@ enum StockProfitLoss {
         var counted = 0
 
         for code in StockHoldings.sharesByCode.keys.sorted() {
-            guard let quote = quotesByCode[code],
+            guard StockMarket.forCode(code) == .mainland,
+                  let quote = quotesByCode[code],
                   let profit = todayProfit(quote, shares: StockHoldings.shares(for: code))
             else { continue }
             total += profit

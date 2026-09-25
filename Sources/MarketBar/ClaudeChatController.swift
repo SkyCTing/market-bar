@@ -78,6 +78,16 @@ final class ClaudeChatController {
         }
     }
 
+    func showDraft(_ text: String, anchor: NSRect) {
+        show(anchor: anchor)
+        guard currentTask == nil else {
+            chatView?.setStatus("请等待当前回复结束，再插入行情草稿")
+            return
+        }
+        chatView?.insertDraft(text)
+        chatView?.setStatus("草稿未发送；确认内容后按 Enter")
+    }
+
     /// 首次打开时把历史对话铺进来（app 自己存的记录，见 ChatTranscriptStore）
     private func loadHistory(into view: ClaudeChatView) {
         guard let sessionID = sessionState.sessionID else {

@@ -847,4 +847,85 @@ final class ReminderMissedTests: XCTestCase {
 
         XCTAssertEqual(missed.count, 2)
     }
+
+    func testAlreadyFiredAtModalStartIsNotReplayed() {
+        let fired = reminder(hour: 9, minute: 0)
+        let due = at(25, 9, 0)
+        let missed = ReminderScheduler.missedScheduled(
+            in: [fired],
+            between: due.addingTimeInterval(0.3),
+            and: at(25, 9, 30),
+            firedKeys: [ReminderScheduler.fireKey(fired, at: due)],
+            calendar: calendar
+        )
+
+        XCTAssertTrue(missed.isEmpty)
+    }
+
+    func testAlreadyFiredOccurrenceDoesNotHideNextDaysMissedOccurrence() {
+        let fired = reminder(hour: 9, minute: 0)
+        let due = at(25, 9, 0)
+        let missed = ReminderScheduler.missedScheduled(
+            in: [fired],
+            between: due.addingTimeInterval(0.3),
+            and: at(26, 9, 30),
+            firedKeys: [ReminderScheduler.fireKey(fired, at: due)],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(missed.first?.fireDate, at(26, 9, 0))
+    }
+
+    func testReplayedOccurrenceIsNotCaughtAgain() throws {
+        let reminder = reminder(hour: 9, minute: 5)
+        let start = at(25, 9, 0)
+        let end = at(25, 9, 30)
+        let first = ReminderScheduler.missedScheduled(
+            in: [reminder], between: start, and: end, calendar: calendar
+        )
+        let fireDate = try XCTUnwrap(first.first?.fireDate)
+
+        let second = ReminderScheduler.missedScheduled(
+            in: [reminder],
+            between: start,
+            and: end,
+            firedKeys: [ReminderScheduler.fireKey(reminder, at: fireDate)],
+            calendar: calendar
+        )
+
+        XCTAssertTrue(second.isEmpty)
+    }
+}
+
+@MainActor
+final class AlertPresenterRoutingTests: XCTestCase {
+    func testHiddenCharacterSuppressesBubbleAndCombinedMethods() {
+        XCTAssertFalse(AlertPresenter.canPresent(.bubble, characterVisible: false))
+        XCTAssertFalse(AlertPresenter.canPresent(.default, characterVisible: false))
+        XCTAssertTrue(AlertPresenter.canPresent(.alert, characterVisible: false))
+        XCTAssertTrue(AlertPresenter.canPresent(.default, characterVisible: true))
+    }
+
+    func testSnoozeValidityChecksBothReminderStores() throws {
+        let suite = "PresenterRouting.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let reminderStore = ReminderStore(defaults: defaults)
+        let priceStore = PriceAlertStore(defaults: defaults)
+        let center = ReminderCenter(
+            store: reminderStore,
+            priceAlertStore: priceStore,
+            characterController: FloatingCharacterController()
+        )
+        let reminder = Reminder(body: "test", hour: 9, minute: 0)
+        let price = PriceAlert(target: .gold, threshold: 100)
+        reminderStore.upsert(reminder)
+        priceStore.upsert(price)
+
+        XCTAssertEqual(center.presenter.stillValid?(reminder.id), true)
+        XCTAssertEqual(center.presenter.stillValid?(price.id), true)
+        priceStore.remove(id: price.id)
+        XCTAssertEqual(center.presenter.stillValid?(price.id), false)
+    }
 }
