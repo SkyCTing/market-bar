@@ -18,6 +18,12 @@ final class AlertPresenter {
     /// 否则删掉的提醒会照样弹（幽灵提醒）
     var stillValid: ((UUID) -> Bool)?
 
+    /// 模态框关闭后回调（模态框开始、结束的时刻）。
+    ///
+    /// `runModal` 会阻塞主线程一整轮，这期间到点的提醒由调用方负责补响 ——
+    /// 呈现层不认识 Reminder，所以只能把时刻交出去
+    var onModalFinished: ((_ startedAt: Date, _ finishedAt: Date) -> Void)?
+
     private let characterController: FloatingCharacterController
     /// 每条提醒各自的「气泡 → 弹窗」待确认定时器
     private var pendingConfirms: [UUID: Timer] = [:]
@@ -87,7 +93,10 @@ final class AlertPresenter {
         alert.addButton(withTitle: "10 分钟后再提醒")
         NSSound(named: "Sosumi")?.play()
 
+        let modalStartedAt = Date()
         let response = alert.runModal()
+        onModalFinished?(modalStartedAt, Date())
+
         guard response == .alertSecondButtonReturn else {
             snoozeCounts[key] = 0
             return

@@ -745,3 +745,106 @@ final class UnreadStateTests: XCTestCase {
         )
     }
 }
+
+
+// MARK: - 被模态框挡住的提醒要补响
+
+final class ReminderMissedTests: XCTestCase {
+    private let calendar = TradingSession.calendar
+
+    private func at(_ day: Int, _ hour: Int, _ minute: Int, _ second: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute, second: second))!
+    }
+
+    private func reminder(hour: Int, minute: Int, second: Int = 0, rule: Reminder.Repeat = .daily) -> Reminder {
+        Reminder(title: "t", body: "b", hour: hour, minute: minute, second: second, repeatRule: rule)
+    }
+
+    /// 09:05 的提醒，模态框从 09:00 一直挡到 09:30 —— 它应该被补响
+    func testReminderInsideTheModalWindowIsCaught() {
+        let missed = ReminderScheduler.missedScheduled(
+            in: [reminder(hour: 9, minute: 5)],
+            between: at(25, 9, 0),
+            and: at(25, 9, 30),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(missed.count, 1)
+    }
+
+    /// 今天已经响过的（下一次在明天）不该被当成漏掉
+    func testAlreadyFiredReminderIsNotCaught() {
+        let missed = ReminderScheduler.missedScheduled(
+            in: [reminder(hour: 9, minute: 5)],
+            between: at(25, 9, 30),
+            and: at(25, 10, 0),
+            calendar: calendar
+        )
+
+        XCTAssertTrue(missed.isEmpty, "09:05 已经过去了，下一次是明天")
+    }
+
+    func testReminderOutsideTheWindowIsNotCaught() {
+        let missed = ReminderScheduler.missedScheduled(
+            in: [reminder(hour: 11, minute: 0)],
+            between: at(25, 9, 0),
+            and: at(25, 9, 30),
+            calendar: calendar
+        )
+
+        XCTAssertTrue(missed.isEmpty)
+    }
+
+    /// 倒计时/价格提醒不走这条路（它们各有各的判定）
+    func testNonScheduledRemindersAreIgnored() {
+        var countdown = reminder(hour: 9, minute: 5)
+        countdown.kind = .countdown
+        countdown.countdownSeconds = 60
+        countdown.countdownStartedAt = at(25, 9, 4)
+
+        let missed = ReminderScheduler.missedScheduled(
+            in: [countdown],
+            between: at(25, 9, 0),
+            and: at(25, 9, 30),
+            calendar: calendar
+        )
+
+        XCTAssertTrue(missed.isEmpty)
+    }
+
+    /// 正好落在模态框开始那一刻的也算（边界别漏）
+    func testReminderExactlyAtModalStartIsCaught() {
+        let missed = ReminderScheduler.missedScheduled(
+            in: [reminder(hour: 9, minute: 0)],
+            between: at(25, 9, 0),
+            and: at(25, 9, 30),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(missed.count, 1)
+    }
+
+    /// 模态框没有时间跨度时什么都不补（避免无谓地重响）
+    func testZeroLengthWindowCatchesNothing() {
+        let instant = at(25, 9, 0)
+
+        XCTAssertTrue(ReminderScheduler.missedScheduled(
+            in: [reminder(hour: 9, minute: 0)],
+            between: instant,
+            and: instant,
+            calendar: calendar
+        ).isEmpty)
+    }
+
+    /// 多条一起漏掉时都要补
+    func testMultipleMissedReminders() {
+        let missed = ReminderScheduler.missedScheduled(
+            in: [reminder(hour: 9, minute: 5), reminder(hour: 9, minute: 10), reminder(hour: 12, minute: 0)],
+            between: at(25, 9, 0),
+            and: at(25, 9, 30),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(missed.count, 2)
+    }
+}

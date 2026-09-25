@@ -211,6 +211,37 @@ enum ReminderScheduler {
         return updated
     }
 
+    /// `[start, now]` 这段时间里本该响、却没能响的定时提醒。
+    ///
+    /// 用来兜住「模态框阻塞主线程」：`runModal` 期间不会排下一次定时器，
+    /// 这期间到点的提醒原来就永远丢了。
+    ///
+    /// 判定方式：`start` 之后的下一次触发时刻 ≤ `now`。
+    /// 今天已经响过的不在此列 —— 它的下一次在明天，自然 > now。
+    static func missedScheduled(
+        in reminders: [Reminder],
+        between start: Date,
+        and now: Date,
+        holidays: [String: String] = [:],
+        makeupWorkdays: Set<String> = [],
+        calendar: Calendar = TradingSession.calendar
+    ) -> [Reminder] {
+        guard now > start else { return [] }
+
+        return reminders.filter { reminder in
+            guard reminder.kind == .scheduled else { return false }
+            // 往前挪 1 秒，把「正好落在 start 那一刻」也算进来
+            guard let next = nextFireDate(
+                after: start.addingTimeInterval(-1),
+                reminder: reminder,
+                holidays: holidays,
+                makeupWorkdays: makeupWorkdays,
+                calendar: calendar
+            ) else { return false }
+            return next <= now
+        }
+    }
+
     /// 两个「天」之间差几天（按北京时间的日历日算）；锚点为空/非法返回 nil
     static func daysBetween(_ anchorDay: String, and date: Date, calendar: Calendar = TradingSession.calendar) -> Int? {
         guard !anchorDay.isEmpty else { return nil }

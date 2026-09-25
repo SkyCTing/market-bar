@@ -35,6 +35,31 @@ final class ReminderCenter {
         presenter.stillValid = { [weak store] id in
             store?.reminders.contains(where: { $0.id == id }) ?? false
         }
+        // 模态框会阻塞主线程一整轮，期间到点的提醒原来就永远丢了 —— 关掉之后补响
+        presenter.onModalFinished = { [weak self] startedAt, finishedAt in
+            self?.fireMissedReminders(between: startedAt, and: finishedAt)
+        }
+    }
+
+    /// 补响被模态框挡住的那几条。
+    /// 放到下一轮 runloop 再响：现在还在 checkDueReminders 的循环里，
+    /// 直接 fire 会在刚关掉的模态框上再叠一个嵌套模态框
+    private func fireMissedReminders(between start: Date, and end: Date) {
+        let missed = ReminderScheduler.missedScheduled(
+            in: store.reminders,
+            between: start,
+            and: end,
+            holidays: holidays,
+            makeupWorkdays: makeupWorkdays
+        )
+        guard !missed.isEmpty else { return }
+
+        Task { @MainActor [weak self] in
+            for reminder in missed {
+                guard let self, self.store.reminders.contains(where: { $0.id == reminder.id }) else { continue }
+                self.fire(reminder)
+            }
+        }
     }
 
     /// 气泡到弹窗的等待时间（转发给 presenter，菜单和测试都还用这个名字）
