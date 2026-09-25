@@ -13,6 +13,8 @@ struct WatchlistConfig: Codable, Equatable {
 
     var watchlist: [Item]
     var holdings: [String: Int]
+    /// 每只的持仓成本（每股均价）。没设过的不在字典里
+    var costs: [String: Double] = [:]
 
     /// 内置默认值：首次运行会把它写成配置文件
     static let `default` = WatchlistConfig(
@@ -50,8 +52,25 @@ struct WatchlistConfig: Codable, Equatable {
             "sh512170": 1_100_000,
             "sz159813": 140_000,
             "sz159567": 110_000,
-        ]
+        ],
+        costs: [:]
     )
+
+    /// ⚠️ 必须手写：合成的解码器**不会**用属性默认值，缺键直接抛 keyNotFound。
+    /// `costs` 是后加的，老配置文件没有这个键 —— 用合成的解码器会把用户的整份清单
+    /// 当成坏文件、备份走再回退成内置默认值。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        watchlist = try container.decode([Item].self, forKey: .watchlist)
+        holdings = try container.decode([String: Int].self, forKey: .holdings)
+        costs = try container.decodeIfPresent([String: Double].self, forKey: .costs) ?? [:]
+    }
+
+    init(watchlist: [Item], holdings: [String: Int], costs: [String: Double] = [:]) {  // swiftlint:disable:this line_length
+        self.watchlist = watchlist
+        self.holdings = holdings
+        self.costs = costs
+    }
 
     static var fileURL: URL {
         let base = FileManager.default

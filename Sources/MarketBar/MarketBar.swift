@@ -1098,6 +1098,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
             created.onDelete = { [weak self] entries in self?.deleteReminderEntries(entries) }
+            created.onTest = { [weak self] in
+                guard let self else { return }
+                let sample = self.reminderStore.reminders.first
+                    ?? Reminder(title: "测试提醒", body: "这是一条测试提醒", hour: 9, minute: 0)
+                self.reminderCenter.presenter.fire(
+                    title: sample.title,
+                    body: sample.body,
+                    methods: sample.methods,
+                    key: UUID()
+                )
+            }
             return created
         }()
         reminderList = controller
@@ -1574,27 +1585,35 @@ final class HoverPanel {
     private var weChatBadge: UnreadCountBadgeView?
     private var weChatSecondBadge: UnreadCountBadgeView?
     private var stockSharesLabels: [String: NSTextField] = [:]
+    private var stockCostLabels: [String: NSTextField] = [:]
+    private var stockFloatingLabels: [String: NSTextField] = [:]
     private var stockProfitLabels: [String: NSTextField] = [:]
 
     // 自选行是四列（名称+量能 | 股数 | 现价+涨跌幅 | 当日盈亏）。
     // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
     // 数值列宽度按实测的最宽内容定：股数 "1,100,000" 55.6pt、现价 "3936.52  -0.39%" 93.6pt、
     // 盈亏 "-1,234,567" 62.5pt；名称列吃剩余宽度（最宽 129.9pt）。
-    static let panelWidth: CGFloat = 440
+    static let panelWidth: CGFloat = 610
     static let padding: CGFloat = 16
     static let columnGap: CGFloat = 8
     static let volumeColumnWidth: CGFloat = 74
     static let sharesColumnWidth: CGFloat = 58
+    static let costColumnWidth: CGFloat = 56
     static let priceColumnWidth: CGFloat = 96
     static let profitColumnWidth: CGFloat = 64
-    static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 4
-        - volumeColumnWidth - sharesColumnWidth - priceColumnWidth - profitColumnWidth
+    static let floatingColumnWidth: CGFloat = 78
+    /// 名称列吃剩余宽度。列多了之后这列变窄，加列时记得一起调 panelWidth
+    static let nameColumnWidth: CGFloat = panelWidth - padding * 2 - columnGap * 6
+        - volumeColumnWidth - sharesColumnWidth - costColumnWidth
+        - priceColumnWidth - profitColumnWidth - floatingColumnWidth
 
     // 列表头文字（列宽测试会拿它们量宽度）
     static let volumeHeader = "量能"
     static let sharesHeader = "股数"
+    static let costHeader = "成本"
     static let priceHeader = "现价"
     static let profitHeader = "当日盈亏"
+    static let floatingHeader = "浮动盈亏"
 
     var isVisible: Bool {
         window?.isVisible ?? false
@@ -1725,7 +1744,11 @@ final class HoverPanel {
             return label
         }
 
-        var stockRowCells: [(title: NSTextField, volume: NSTextField, shares: NSTextField, value: NSTextField, profit: NSTextField)] = []
+        typealias StockCells = (
+            title: NSTextField, volume: NSTextField, shares: NSTextField,
+            cost: NSTextField, value: NSTextField, profit: NSTextField, floating: NSTextField
+        )
+        var stockRowCells: [StockCells] = []
 
         // 列表头。名称格给一个空格而不是空串：NSTextField 空串的固有高度是 0，
         // 会把这一行压扁（行高取自名称格）。
@@ -1735,8 +1758,10 @@ final class HoverPanel {
             headerTitle,
             makeStockCell(Self.volumeHeader, weight: .medium, color: labelColor),
             makeStockCell(Self.sharesHeader, weight: .regular, color: labelColor),
+            makeStockCell(Self.costHeader, weight: .regular, color: labelColor),
             makeStockCell(Self.priceHeader, weight: .regular, color: labelColor),
-            makeStockCell(Self.profitHeader, weight: .regular, color: labelColor)
+            makeStockCell(Self.profitHeader, weight: .regular, color: labelColor),
+            makeStockCell(Self.floatingHeader, weight: .regular, color: labelColor)
         ))
 
         for row in data.stocks {
@@ -1753,6 +1778,7 @@ final class HoverPanel {
             )
 
             let sharesLabel = makeStockCell(row.sharesText, weight: .regular, color: valueColor)
+            let costLabel = makeStockCell(row.costText, weight: .regular, color: valueColor)
             let vl = makeStockCell(
                 formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent),
                 weight: .medium,
@@ -1764,10 +1790,18 @@ final class HoverPanel {
                 color: HoverPalette.trendColor(row.profitLoss, fallback: valueColor)
             )
 
-            stockRowCells.append((tl, volumeLabel, sharesLabel, vl, profitLabel))
+            let floatingLabel = makeStockCell(
+                row.floatingProfitText,
+                weight: .medium,
+                color: HoverPalette.trendColor(row.floatingProfit, fallback: valueColor)
+            )
+
+            stockRowCells.append((tl, volumeLabel, sharesLabel, costLabel, vl, profitLabel, floatingLabel))
             stockTitleLabels[quote.code] = tl
             stockVolumeLabels[quote.code] = volumeLabel
             stockSharesLabels[quote.code] = sharesLabel
+            stockCostLabels[quote.code] = costLabel
+            stockFloatingLabels[quote.code] = floatingLabel
             stockValueLabels[quote.code] = vl
             stockProfitLabels[quote.code] = profitLabel
         }
@@ -1884,13 +1918,21 @@ final class HoverPanel {
                 cells.shares.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.shares.widthAnchor.constraint(equalToConstant: Self.sharesColumnWidth),
 
-                cells.value.leadingAnchor.constraint(equalTo: cells.shares.trailingAnchor, constant: columnGap),
+                cells.cost.leadingAnchor.constraint(equalTo: cells.shares.trailingAnchor, constant: columnGap),
+                cells.cost.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.cost.widthAnchor.constraint(equalToConstant: Self.costColumnWidth),
+
+                cells.value.leadingAnchor.constraint(equalTo: cells.cost.trailingAnchor, constant: columnGap),
                 cells.value.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.value.widthAnchor.constraint(equalToConstant: Self.priceColumnWidth),
 
                 cells.profit.leadingAnchor.constraint(equalTo: cells.value.trailingAnchor, constant: columnGap),
                 cells.profit.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.profit.widthAnchor.constraint(equalToConstant: Self.profitColumnWidth),
+
+                cells.floating.leadingAnchor.constraint(equalTo: cells.profit.trailingAnchor, constant: columnGap),
+                cells.floating.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.floating.widthAnchor.constraint(equalToConstant: Self.floatingColumnWidth),
             ])
             prev = cells.title.bottomAnchor
         }
@@ -2007,6 +2049,9 @@ final class HoverPanel {
 
             // 持仓两列：无持仓时是空串（留白）
             stockSharesLabels[quote.code]?.stringValue = row.sharesText
+            stockCostLabels[quote.code]?.stringValue = row.costText
+            stockFloatingLabels[quote.code]?.stringValue = row.floatingProfitText
+            stockFloatingLabels[quote.code]?.textColor = HoverPalette.trendColor(row.floatingProfit, fallback: fallback)
             stockProfitLabels[quote.code]?.stringValue = row.profitLossText
             stockProfitLabels[quote.code]?.textColor = HoverPalette.trendColor(row.profitLoss, fallback: fallback)
         }
@@ -2025,6 +2070,8 @@ final class HoverPanel {
         weChatBadge = nil
         weChatSecondBadge = nil
         stockSharesLabels.removeAll()
+        stockCostLabels.removeAll()
+        stockFloatingLabels.removeAll()
         stockProfitLabels.removeAll()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15

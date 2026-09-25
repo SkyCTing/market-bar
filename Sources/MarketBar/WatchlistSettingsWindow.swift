@@ -46,9 +46,9 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     /// 刚被 `refreshCell` 顶掉的那个 field：它随后的 endEditing 要丢掉
     private weak var suppressedField: NSTextField?
 
-    private static let columnTitles = ["名称", "代码", "股数"]
-    private static let columnIDs = ["name", "code", "shares"]
-    private static let columnWidths: [CGFloat] = [186, 112, 122]
+    private static let columnTitles = ["名称", "代码", "股数", "成本"]
+    private static let columnIDs = ["name", "code", "shares", "cost"]
+    private static let columnWidths: [CGFloat] = [150, 112, 112, 100]
     private static let resultColumnTitles = ["名称", "代码", "备注"]
     private static let resultColumnIDs = ["rname", "rcode", "rnote"]
     private static let resultColumnWidths: [CGFloat] = [232, 96, 130]
@@ -271,9 +271,14 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         field.font = .systemFont(ofSize: 13)
         field.lineBreakMode = .byTruncatingTail
         field.delegate = self
-        field.placeholderString = identifier == "code" ? "sh600036" : (identifier == "shares" ? "留空 = 不持仓" : "")
+        field.placeholderString = switch identifier {
+        case "code": "sh600036"
+        case "shares": "留空 = 不持仓"
+        case "cost": "留空 = 未设置"
+        default: ""
+        }
         // 股数是数字，右对齐读起来更快；名称和代码左对齐
-        field.alignment = identifier == "shares" ? .right : .left
+        field.alignment = (identifier == "shares" || identifier == "cost") ? .right : .left
         return field
     }
 
@@ -282,6 +287,7 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         case "name": return row.name
         case "code": return row.code
         case "shares": return WatchlistDraft.sharesText(row.shares)
+        case "cost": return WatchlistDraft.costText(row.cost)
         default: return ""
         }
     }
@@ -335,6 +341,9 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         case "shares":
             draft.rows[row].shares = WatchlistDraft.parseShares(field.stringValue)
             field.stringValue = WatchlistDraft.sharesText(draft.rows[row].shares)
+        case "cost":
+            draft.rows[row].cost = WatchlistDraft.parseCost(field.stringValue)
+            field.stringValue = WatchlistDraft.costText(draft.rows[row].cost)
         default:
             return
         }

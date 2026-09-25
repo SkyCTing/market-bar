@@ -283,3 +283,64 @@ final class WatchlistDraftTests: XCTestCase {
         XCTAssertFalse(draft.normalizeCode(at: 9), "越界不该崩")
     }
 }
+
+
+// MARK: - 持仓成本
+
+final class WatchlistCostTests: XCTestCase {
+    func testRoundTripThroughDraftKeepsCosts() {
+        let config = WatchlistConfig(
+            watchlist: [.init(code: "sh600036", name: "招商银行")],
+            holdings: ["sh600036": 1_500],
+            costs: ["sh600036": 38.5]
+        )
+
+        XCTAssertEqual(WatchlistDraft(config: config).config(), config)
+    }
+
+    /// 没填股数的行不写成本：免得以后补上股数时冒出一个陈年成本
+    func testCostIsDroppedWithoutShares() {
+        let draft = WatchlistDraft(rows: [
+            WatchlistRow(code: "sh600036", name: "招商银行", shares: nil, cost: 38.5),
+        ])
+
+        XCTAssertTrue(draft.config().costs.isEmpty)
+        XCTAssertTrue(draft.config().holdings.isEmpty)
+    }
+
+    func testParseCostRejectsNonPositive() {
+        XCTAssertEqual(WatchlistDraft.parseCost("38.5"), 38.5)
+        XCTAssertEqual(WatchlistDraft.parseCost(" 1,234.56 "), 1_234.56)
+        XCTAssertNil(WatchlistDraft.parseCost(""))
+        XCTAssertNil(WatchlistDraft.parseCost("0"))
+        XCTAssertNil(WatchlistDraft.parseCost("-3"))
+        XCTAssertNil(WatchlistDraft.parseCost("abc"))
+    }
+
+    func testCostText() {
+        XCTAssertEqual(WatchlistDraft.costText(38.5), "38.50")
+        XCTAssertEqual(WatchlistDraft.costText(nil), "")
+    }
+
+    /// 浮动盈亏 =（现价 − 成本）× 股数；缺任何一项都是 nil（不显示 0）
+    func testFloatingProfit() {
+        XCTAssertEqual(WatchlistDraft.floatingProfit(price: 45, cost: 38.5, shares: 1_000), 6_500)
+        XCTAssertNil(WatchlistDraft.floatingProfit(price: 45, cost: nil, shares: 1_000))
+        XCTAssertNil(WatchlistDraft.floatingProfit(price: nil, cost: 38.5, shares: 1_000))
+        XCTAssertNil(WatchlistDraft.floatingProfit(price: 45, cost: 38.5, shares: nil))
+    }
+
+    /// ⚠️ 回归：`costs` 是后加的字段，合成的解码器缺键会抛 keyNotFound ——
+    /// 那会把用户的整份清单当成坏文件、备份走再回退成内置默认值。必须手写容错。
+    func testDecodesLegacyConfigWithoutCostsKey() throws {
+        let legacy = """
+        {"watchlist":[{"code":"sh600036","name":"招商银行"}],"holdings":{"sh600036":1500}}
+        """
+
+        let config = try JSONDecoder().decode(WatchlistConfig.self, from: Data(legacy.utf8))
+
+        XCTAssertEqual(config.watchlist.map(\.code), ["sh600036"])
+        XCTAssertEqual(config.holdings["sh600036"], 1_500)
+        XCTAssertTrue(config.costs.isEmpty, "老文件没有 costs 键，应当是空的而不是解码失败")
+    }
+}

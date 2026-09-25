@@ -32,6 +32,8 @@ final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate
     var onEdit: ((ReminderListEntry) -> Void)?
     /// 点「删除」（多选）
     var onDelete: (([ReminderListEntry]) -> Void)?
+    /// 点「测试提醒」—— 当场按当前提醒方式弹一条，不用等
+    var onTest: (() -> Void)?
 
     private(set) var entries: [ReminderListEntry] = []
     /// 价格提醒每一行显示什么名字，由外面注入（要查自选清单）
@@ -96,13 +98,14 @@ final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate
 
         let addReminder = NSButton(title: "添加提醒…", target: self, action: #selector(addReminder))
         let addAlert = NSButton(title: "添加价格提醒…", target: self, action: #selector(addPriceAlert))
-        for button in [addReminder, addAlert, editButton, deleteButton] {
+        let testButton = NSButton(title: "测试提醒", target: self, action: #selector(testReminder))
+        for button in [addReminder, addAlert, testButton, editButton, deleteButton] {
             button.bezelStyle = .rounded
         }
         editButton.target = self
         editButton.action = #selector(editSelected)
 
-        let leftButtons = NSStackView(views: [addReminder, addAlert])
+        let leftButtons = NSStackView(views: [addReminder, addAlert, testButton])
         leftButtons.spacing = 8
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
@@ -180,6 +183,7 @@ final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate
     // MARK: - 按钮
 
     @objc private func addReminder() { onAddReminder?() }
+    @objc private func testReminder() { onTest?() }
     @objc private func addPriceAlert() { onAddPriceAlert?() }
 
     @objc private func editSelected() {
@@ -202,6 +206,7 @@ final class ReminderListController {
     var onAddPriceAlert: (() -> Void)?
     var onEdit: ((ReminderListEntry) -> Void)?
     var onDelete: (([ReminderListEntry]) -> Void)?
+    var onTest: (() -> Void)?
     var displayName: ((PriceAlert.Target) -> String)?
 
     private var window: ReminderListWindow?
@@ -219,6 +224,7 @@ final class ReminderListController {
             created.onAddPriceAlert = { [weak self] in self?.onAddPriceAlert?() }
             created.onEdit = { [weak self] entry in self?.onEdit?(entry) }
             created.onDelete = { [weak self] entries in self?.onDelete?(entries) }
+            created.onTest = { [weak self] in self?.onTest?() }
             view = created
             self.view = created
         }

@@ -15,9 +15,19 @@ enum StockHoldings {
     /// 运行时从配置文件读；菜单里「重新载入配置」可刷新。
     /// `nonisolated(unsafe)`：启动时写一次，之后只在主线程通过 reload() 改，读的地方都是主线程
     nonisolated(unsafe) static var sharesByCode: [String: Int] = WatchlistConfig.load().holdings
+    /// 每股持仓成本（均价）；没设过的不在字典里
+    nonisolated(unsafe) static var costsByCode: [String: Double] = WatchlistConfig.load().costs
 
     static func reload() {
-        sharesByCode = WatchlistConfig.load().holdings
+        let config = WatchlistConfig.load()
+        sharesByCode = config.holdings
+        costsByCode = config.costs
+    }
+
+    /// nil = 没设过成本
+    static func cost(for code: String) -> Double? {
+        guard let cost = costsByCode[code], cost > 0 else { return nil }
+        return cost
     }
 
     /// nil = 没有持仓（如上证指数），或股数非正

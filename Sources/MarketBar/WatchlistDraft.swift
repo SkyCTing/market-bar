@@ -5,6 +5,8 @@ struct WatchlistRow: Equatable, Sendable {
     var code: String
     var name: String
     var shares: Int?
+    /// 每股持仓成本（均价）。nil = 没设过
+    var cost: Double?
 }
 
 /// 「自选与持仓」配置页面的编辑草稿。
@@ -23,7 +25,12 @@ struct WatchlistDraft: Equatable {
     /// 持仓里有、自选里没有的代码补成一行 —— 否则它在页面上看不见，一保存就被静默抹掉。
     init(config: WatchlistConfig) {
         var rows = config.watchlist.map {
-            WatchlistRow(code: $0.code, name: $0.name, shares: config.holdings[$0.code])
+            WatchlistRow(
+                code: $0.code,
+                name: $0.name,
+                shares: config.holdings[$0.code],
+                cost: config.costs[$0.code]
+            )
         }
         let listed = Set(config.watchlist.map(\.code))
         for code in config.holdings.keys.sorted() where !listed.contains(code) {
@@ -36,6 +43,7 @@ struct WatchlistDraft: Equatable {
     /// 股数缺省或非正数不进持仓表（与 `StockHoldings.shares(for:)` 的口径一致）。
     func config() -> WatchlistConfig {
         var holdings: [String: Int] = [:]
+        var costs: [String: Double] = [:]
         var watchlist: [WatchlistConfig.Item] = []
 
         for row in rows where !row.code.isEmpty {
@@ -45,10 +53,15 @@ struct WatchlistDraft: Equatable {
             ))
             if let shares = row.shares, shares > 0 {
                 holdings[row.code] = shares
+                // 成本只在有持仓时才有意义；没填股数的行不写成本，
+                // 免得以后补上股数时冒出一个陈年成本
+                if let cost = row.cost, cost > 0 {
+                    costs[row.code] = cost
+                }
             }
         }
 
-        return WatchlistConfig(watchlist: watchlist, holdings: holdings)
+        return WatchlistConfig(watchlist: watchlist, holdings: holdings, costs: costs)
     }
 
     // MARK: - 增删改
@@ -164,6 +177,27 @@ struct WatchlistDraft: Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = Int(cleaned), value > 0 else { return nil }
         return value
+    }
+
+    /// 成本文本 → 成本。空串、非数字、非正数都当作「没设过」
+    static func parseCost(_ text: String) -> Double? {
+        let cleaned = text
+            .replacingOccurrences(of: ",", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(cleaned), value > 0, value.isFinite else { return nil }
+        return value
+    }
+
+    /// 成本列怎么显示（和面板同一口径，复制回去能原样解析）
+    static func costText(_ cost: Double?) -> String {
+        guard let cost, cost > 0 else { return "" }
+        return String(format: "%.2f", cost)
+    }
+
+    /// 浮动盈亏 =（现价 − 成本）× 股数。缺成本或缺价格就是 nil（不显示 0）
+    static func floatingProfit(price: Double?, cost: Double?, shares: Int?) -> Double? {
+        guard let price, let cost, cost > 0, let shares, shares > 0 else { return nil }
+        return (price - cost) * Double(shares)
     }
 
     /// 面板上那一列怎么显示，这里就怎么写 （同一口径，复制回去能原样解析）

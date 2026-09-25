@@ -180,9 +180,21 @@ struct StockRow: Sendable {
         return StockProfitLoss.todayProfit(quote, shares: shares)
     }
 
+    /// 每股成本；没设过就是 nil
+    var cost: Double? { StockHoldings.cost(for: quote.code) }
+
+    /// 浮动盈亏（元）=（现价 − 成本）× 股数。
+    /// 缺成本或缺现价就是 nil —— 不要显示成 0，那和「不赚不亏」分不清
+    var floatingProfit: Double? {
+        guard let price = quote.numericPrice, let cost, let shares else { return nil }
+        return (price - cost) * Double(shares)
+    }
+
     /// 面板单元格文本：无持仓时是**空串**（留白），不是 "--"
     var sharesText: String { shares.map(HoldingFormat.sharesText) ?? "" }
     var profitLossText: String { profitLoss.map(HoldingFormat.profitLossText) ?? "" }
+    var costText: String { cost.map { String(format: "%.2f", $0) } ?? "" }
+    var floatingProfitText: String { floatingProfit.map(HoldingFormat.profitLossText) ?? "" }
 }
 
 /// 悬浮面板的配色与富文本。`NSColor` 不是 Sendable，所以整体限定在主线程。

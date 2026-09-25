@@ -11,15 +11,17 @@ final class HoverPanelLayoutTests: XCTestCase {
         (text as NSString).size(withAttributes: [.font: font]).width
     }
 
-    /// 四列宽度 + 三个间隙 + 两侧内边距必须正好等于面板宽度
+    /// 六列宽度 + 五个间隙 + 两侧内边距必须正好等于面板宽度
     func testColumnsTileTheWidthExactly() {
         let total = HoverPanel.padding * 2
-            + HoverPanel.columnGap * 4
+            + HoverPanel.columnGap * 6
             + HoverPanel.nameColumnWidth
             + HoverPanel.volumeColumnWidth
             + HoverPanel.sharesColumnWidth
+            + HoverPanel.costColumnWidth
             + HoverPanel.priceColumnWidth
             + HoverPanel.profitColumnWidth
+            + HoverPanel.floatingColumnWidth
 
         XCTAssertEqual(total, HoverPanel.panelWidth, accuracy: 0.001)
     }
