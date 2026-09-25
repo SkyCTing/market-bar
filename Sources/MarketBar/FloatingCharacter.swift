@@ -692,8 +692,12 @@ final class FloatingCharacterController: NSObject {
         }
 
         // 两颗徽标贴在人物右上角（左＝主微信、右＝微信小号），点击打开对应微信
-        mainBadge.onClick = { UnreadBadge.activate(bundleID: UnreadBadge.mainBundleID) }
-        secondBadge.onClick = { UnreadBadge.activate(bundleID: UnreadBadge.secondBundleID) }
+        mainBadge.onClick = { state in
+            UnreadBadge.handleBadgeClick(state: state, bundleID: UnreadBadge.mainBundleID)
+        }
+        secondBadge.onClick = { state in
+            UnreadBadge.handleBadgeClick(state: state, bundleID: UnreadBadge.secondBundleID)
+        }
         for badge in [mainBadge, secondBadge] {
             badge.translatesAutoresizingMaskIntoConstraints = false
             characterView.addSubview(badge)

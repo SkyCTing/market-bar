@@ -39,6 +39,32 @@ enum UnreadBadge {
     static let mainBundleID = "com.tencent.xinWeChat"
     static let secondBundleID = "com.tencent.xinWeChatSecond"
 
+    /// 请求「辅助功能」权限。
+    ///
+    /// 两条一起走：系统那句「MarketBar 想控制这台电脑」每次启动只会弹一次，
+    /// 之后系统会静默忽略；所以再直接把设置面板打开到「辅助功能」那一页兜底。
+    @MainActor
+    static func requestAccessibilityPermission() {
+        // 用字面量而不是 kAXTrustedCheckOptionPrompt：那个常量在 Swift 6 下是
+        // 非并发安全的全局 var，取用会编译报错。它的值就是这个字符串
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// 徽标被点时该干什么：读不到就去要权限，其余情况打开对应的微信
+    @MainActor
+    static func handleBadgeClick(state: UnreadState, bundleID: String) {
+        guard state != .unavailable else {
+            requestAccessibilityPermission()
+            return
+        }
+        activate(bundleID: bundleID)
+    }
+
     /// 打开对应的微信（把它的窗口带到前面）；没运行就启动它。
     ///
     /// 顺序有讲究：**优先用 AppleScript 的 `activate`** —— 它最接近「点 Dock 图标」的行为，
@@ -134,10 +160,14 @@ final class UnreadCountBadgeView: NSView {
 
     private let label = NSTextField(labelWithString: "")
     /// 点徽标时执行（用来打开对应的微信）
-    var onClick: (() -> Void)?
+    /// 点击时把**当前状态**一起传出去 —— 没授权（`.unavailable`）时该做的是
+    /// 去要权限，而不是傻乎乎地去打开微信
+    var onClick: ((UnreadState) -> Void)?
+
+    private(set) var state: UnreadState = .unavailable
 
     override func mouseDown(with event: NSEvent) {
-        onClick?()
+        onClick?(state)
     }
 
     /// 抬起事件必须在这里吃掉。徽标中央被内部的数字标签盖住，标签不处理 mouseUp 时会
@@ -170,6 +200,7 @@ final class UnreadCountBadgeView: NSView {
     /// 有未读：红底 + 数字（超过 99 显示 99+）；没有未读：灰圈（仍可点击打开微信）；
     /// 读不到：深一号的圈 + 「!」，和「没有未读」区分开
     func update(_ state: UnreadState) {
+        self.state = state
         switch state {
         case .count(let count):
             label.stringValue = count > 99 ? "99+" : "\(count)"
