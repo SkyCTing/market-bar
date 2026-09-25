@@ -135,11 +135,13 @@ enum ReminderScheduler {
 
 - `Reminder` 加 `skipHolidays: Bool = false`
 - 勾选后，触发前先查节假日（**已有现成数据**：`MarketCalendar.HolidayCache.load(year:to:)` + `MarketCalendar.isTradingDay`，每天自动拉一次）
-- **待确认的行为**：撞上节假日时是
-  - (a) **直接跳过**（当天不提醒），还是
-  - (b) **顺延到下一个交易日/工作日**再提醒（比如「每月 15 号还信用卡」撞上周六 → 周一提醒）
-  → 实现前先问用户；建议默认 (b)，更符合「还信用卡」这类场景
-- 这个开关同样受用于周末：勾选后周末也不提醒
+- **已确认的语义**（用户 2026-09-25）：这个勾选项是「**节假日不提醒**」，
+  **默认不勾选 = 照常提醒**（含节假日）；勾上 = 当天是节假日就不提醒（**直接跳过，不顺延**）
+- 节假日数据**已经在 app 里了，不需要新接口**：`GoldPriceService.fetchHolidays(year:)` 每天拉一次
+  `https://timor.tech/api/holiday/year/<year>`（只取 `holiday == true` 的法定放假日，含节日名），
+  缓存在 `UserDefaults`（`MarketCalendar.HolidayCache`）。判断直接用现成的：
+  `MarketCalendar.isTradingDay(date, holidays:)`（周末也算非交易日）或 `holidayName(on:holidays:)`
+- **实现时取缓存**：`MarketCalendar.HolidayCache.load(year:to:)`，拿不到就当没有节假日（正常提醒）
 
 ## 验证补充
 
