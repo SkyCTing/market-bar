@@ -940,67 +940,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func clearReminders() {
         reminderStore.removeAll()
+        reminderCenter.reload()
         rebuildMenu()
     }
 
-    /// 添加 / 编辑提醒的对话框：时间 + 重复 + 文案
+    /// 添加 / 编辑提醒的对话框：时间（时/分/秒）+ 重复（每天/每周/每月）+ 文案 + 节假日开关
     private func showReminderDialog(editing reminder: Reminder?) {
         let alert = NSAlert()
         alert.messageText = reminder == nil ? "添加提醒" : "编辑提醒"
-        alert.informativeText = "时间格式 HH:mm；删除这条提醒请点「删除」"
+        alert.informativeText = reminder == nil
+            ? "时间精确到秒；勾选「节假日不提醒」后，周末与法定节假日都不会响"
+            : "改完点保存；也可以删除这条提醒"
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
         if reminder != nil { alert.addButton(withTitle: "删除") }
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 76))
-
-        let timeField = NSTextField(frame: NSRect(x: 0, y: 46, width: 80, height: 24))
-        timeField.placeholderString = "HH:mm"
-        timeField.stringValue = reminder?.timeText ?? "09:00"
-
-        let repeatPopup = NSPopUpButton(frame: NSRect(x: 88, y: 46, width: 140, height: 25))
-        repeatPopup.addItems(withTitles: ["每天"] + (1...7).map { "每\(["日","一","二","三","四","五","六"][$0-1])" } + (1...31).map { "每月\($0)号" })
-        if let rule = reminder?.repeatRule {
-            switch rule {
-            case .daily: repeatPopup.selectItem(at: 0)
-            case .weekly(let weekday): repeatPopup.selectItem(at: weekday)
-            case .monthly(let day): repeatPopup.selectItem(at: 7 + day)
-            }
-        }
-
-        let bodyField = NSTextField(frame: NSRect(x: 0, y: 12, width: 300, height: 24))
-        bodyField.placeholderString = "提醒内容，例如：还信用卡"
-        bodyField.stringValue = reminder?.body ?? ""
-
-        for view in [timeField, repeatPopup, bodyField] { container.addSubview(view) }
-        alert.accessoryView = container
-        alert.window.initialFirstResponder = timeField
+        let form = ReminderDialogView(reminder: reminder)
+        alert.accessoryView = form
+        alert.window.initialFirstResponder = form.firstResponderControl
 
         let response = alert.runModal()
         if response == .alertThirdButtonReturn, let reminder {
             reminderStore.remove(id: reminder.id)
+            reminderCenter.reload()
             rebuildMenu()
             return
         }
         guard response == .alertFirstButtonReturn else { return }
 
-        let parts = timeField.stringValue.split(separator: ":")
-        guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
-              (0...23).contains(hour), (0...59).contains(minute) else {
+        guard let edited = form.makeReminder(basedOn: reminder) else {
             NSSound.beep()
             return
         }
-        let index = repeatPopup.indexOfSelectedItem
-        let rule: Reminder.Repeat = index == 0 ? .daily
-            : (index <= 7 ? .weekly(weekday: index) : .monthly(day: index - 7))
-
-        var updated = reminder ?? Reminder(body: "", hour: hour, minute: minute)
-        updated.hour = hour
-        updated.minute = minute
-        updated.repeatRule = rule
-        updated.body = bodyField.stringValue.isEmpty ? "提醒" : bodyField.stringValue
-        updated.title = updated.body
-        reminderStore.upsert(updated)
+        reminderStore.upsert(edited)
+        reminderCenter.reload()
         rebuildMenu()
     }
 

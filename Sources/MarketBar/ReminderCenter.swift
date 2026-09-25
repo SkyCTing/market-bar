@@ -6,8 +6,6 @@ import AppKit
 /// （「知道了」/「10 分钟后再提醒」，顺延最多 6 次，沿用 monthly-reminder.sh 的语义）。
 @MainActor
 final class ReminderCenter {
-    /// 30 秒扫一次：提醒不需要秒级精度，也避免和金价刷新耦合（它每秒一跳）
-    private static let checkInterval: TimeInterval = 30
     private static let acknowledgeWindow: TimeInterval = 60
     private static let snoozeInterval: TimeInterval = 600
     private static let maximumSnoozeCount = 6
@@ -25,17 +23,50 @@ final class ReminderCenter {
     }
 
     func start() {
+        scheduleNext()
+    }
+
+    /// 配置变化后重新排程（菜单里增删改之后调用）
+    func reload() {
+        scheduleNext()
+    }
+
+    private var holidays: [String: String] {
+        MarketCalendar.HolidayCache.load(
+            year: MarketCalendar.HolidayCache.year(of: Date()),
+            from: .standard
+        )
+    }
+
+    /// 精确排程：算出所有提醒里最早的下一次触发时刻，定一个一次性 Timer 到那一刻。
+    /// 秒级精度靠这个，轮询做不到（30 秒扫一次最多会晚 30 秒）。
+    private func scheduleNext() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: Self.checkInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.checkDueReminders() }
+        timer = nil
+
+        let now = Date()
+        let calendar = TradingSession.calendar
+        let next = store.reminders
+            .compactMap { ReminderScheduler.nextFireDate(after: now, reminder: $0, holidays: holidays, calendar: calendar) }
+            .min()
+        // 没有下一条（比如都删了）就不排
+        guard let next else { return }
+
+        // 提前 0.2 秒唤醒，落到目标秒时判定命中
+        let interval = max(0.2, next.timeIntervalSince(now) - 0.2)
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkDueReminders()
+                self?.scheduleNext()
+            }
         }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
-        checkDueReminders()
     }
 
     private func checkDueReminders() {
         let now = Date()
-        for reminder in store.reminders where ReminderScheduler.isDue(reminder, at: now) {
+        for reminder in store.reminders
+        where ReminderScheduler.isDue(reminder, at: now, holidays: holidays) {
             let key = ReminderScheduler.fireKey(reminder, at: now)
             guard !firedKeys.contains(key) else { continue }
             firedKeys.insert(key)

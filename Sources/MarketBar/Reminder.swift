@@ -23,18 +23,39 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
     var body: String
     var hour: Int
     var minute: Int
+    /// 秒级精度（用户要求）
+    var second: Int = 0
     var repeatRule: Repeat = .daily
+    /// 勾上 = 节假日（含周末）不提醒；默认不勾 = 照常提醒
+    var skipHolidays: Bool = false
 
-    var timeText: String { String(format: "%02d:%02d", hour, minute) }
+    /// 显式声明键：新增字段后要能兼容旧数据（见文件末尾的 init(from:)）
+    enum CodingKeys: String, CodingKey {
+        case id, title, body, hour, minute, second, repeatRule, skipHolidays
+    }
+
+    var timeText: String { String(format: "%02d:%02d:%02d", hour, minute, second) }
     var summary: String { "\(timeText)  \(repeatRule.title) · \(body)" }
 }
 
 /// 触发判定：纯逻辑，便于单测
 enum ReminderScheduler {
     /// 此刻该不该触发（只判断「到点」与「重复规则匹配」，去重交给调用方）
-    static func isDue(_ reminder: Reminder, at date: Date, calendar: Calendar = TradingSession.calendar) -> Bool {
-        let parts = calendar.dateComponents([.hour, .minute, .weekday, .day], from: date)
-        guard parts.hour == reminder.hour, parts.minute == reminder.minute else { return false }
+    static func isDue(
+        _ reminder: Reminder,
+        at date: Date,
+        holidays: [String: String] = [:],
+        calendar: Calendar = TradingSession.calendar
+    ) -> Bool {
+        // 勾了「节假日不提醒」时，非交易日（周末 + 法定节假日）整天不触发
+        if reminder.skipHolidays, !MarketCalendar.isTradingDay(date, holidays: holidays, calendar: calendar) {
+            return false
+        }
+
+        let parts = calendar.dateComponents([.hour, .minute, .second, .weekday, .day], from: date)
+        guard parts.hour == reminder.hour,
+              parts.minute == reminder.minute,
+              (parts.second ?? 0) == reminder.second else { return false }
 
         switch reminder.repeatRule {
         case .daily:
@@ -48,15 +69,22 @@ enum ReminderScheduler {
 
     /// 去重键：同一条提醒同一分钟只触发一次
     static func fireKey(_ reminder: Reminder, at date: Date, calendar: Calendar = TradingSession.calendar) -> String {
-        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-        return "\(reminder.id.uuidString)-\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)-\(parts.hour ?? 0)-\(parts.minute ?? 0)"
+        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        return "\(reminder.id.uuidString)-\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
+            + "-\(parts.hour ?? 0)-\(parts.minute ?? 0)-\(parts.second ?? 0)"
     }
 
     /// 下一次触发时间（菜单里显示用）
-    static func nextFireDate(after date: Date, reminder: Reminder, calendar: Calendar = TradingSession.calendar) -> Date? {
+    static func nextFireDate(
+        after date: Date,
+        reminder: Reminder,
+        holidays: [String: String] = [:],
+        calendar: Calendar = TradingSession.calendar
+    ) -> Date? {
         var components = DateComponents()
         components.hour = reminder.hour
         components.minute = reminder.minute
+        components.second = reminder.second
 
         for offset in 0...370 {
             guard let day = calendar.date(byAdding: .day, value: offset, to: date) else { continue }
@@ -76,6 +104,10 @@ enum ReminderScheduler {
             components.month = month
             components.day = dayOfMonth
             guard let candidate = calendar.date(from: components), candidate > date else { continue }
+            // 勾了「节假日不提醒」时，落在非交易日的那次直接跳到下一天再看
+            if reminder.skipHolidays, !MarketCalendar.isTradingDay(candidate, holidays: holidays, calendar: calendar) {
+                continue
+            }
             return candidate
         }
         return nil
@@ -124,5 +156,24 @@ final class ReminderStore {
     func removeAll() {
         reminders.removeAll()
         save()
+    }
+}
+
+
+extension Reminder {
+    /// 容忍缺字段的解码：`second` / `skipHolidays` 是后加的，
+    /// 用编译器合成的 init(from:) 遇到旧数据会直接抛 keyNotFound，导致**已有提醒全被清空**。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
+            title: try container.decodeIfPresent(String.self, forKey: .title) ?? "提醒",
+            body: try container.decodeIfPresent(String.self, forKey: .body) ?? "提醒",
+            hour: try container.decodeIfPresent(Int.self, forKey: .hour) ?? 9,
+            minute: try container.decodeIfPresent(Int.self, forKey: .minute) ?? 0,
+            repeatRule: try container.decodeIfPresent(Repeat.self, forKey: .repeatRule) ?? .daily
+        )
+        second = try container.decodeIfPresent(Int.self, forKey: .second) ?? 0
+        skipHolidays = try container.decodeIfPresent(Bool.self, forKey: .skipHolidays) ?? false
     }
 }
