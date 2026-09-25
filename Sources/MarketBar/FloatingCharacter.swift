@@ -698,7 +698,11 @@ final class FloatingCharacterController: NSObject {
             badge.translatesAutoresizingMaskIntoConstraints = false
             characterView.addSubview(badge)
         }
-        // 位置：头的左右两侧（按视图宽高的比例定位，换尺寸档位时不会跑偏）
+        // 位置：视图内左右两侧偏下的位置，按宽高比例定位（换尺寸档位不会跑偏）。
+        //
+        // ⚠️ 别"顺手修"成 0.24：约束求解用的是**以左上角为原点**的翻转空间，
+        // `.centerY == 0.76 × .bottom` 实际落在距底 24% 处（下半身）。这看着像 bug，
+        // 但用户明确说过「徽标位置我没要求，就还放在原来的位置」—— 是这个位置，别动。
         NSLayoutConstraint.activate([
             NSLayoutConstraint(
                 item: mainBadge, attribute: .centerX, relatedBy: .equal,
