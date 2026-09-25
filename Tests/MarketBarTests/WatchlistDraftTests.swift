@@ -388,3 +388,70 @@ final class FloatingProfitFormatTests: XCTestCase {
         XCTAssertEqual(HoldingFormat.floatingProfit(profit: 0, percent: 0), "0  0.00%")
     }
 }
+
+
+// MARK: - 老格式迁移（股数 / 成本从独立字典并进条目）
+
+final class WatchlistConfigMigrationTests: XCTestCase {
+    /// ⚠️ 老文件是「watchlist 放名字 + holdings 放股数 + costs 放成本」三份数据，
+    /// 现在合并成一份。读老文件必须读得进来且一个都不丢。
+    func testMergesLegacyDictionariesIntoItems() throws {
+        let legacy = """
+        {"watchlist":[{"code":"sh600036","name":"招商银行"},{"code":"sh000001","name":"上证指数"}],
+         "holdings":{"sh600036":1500},
+         "costs":{"sh600036":38.123}}
+        """
+
+        let config = try JSONDecoder().decode(WatchlistConfig.self, from: Data(legacy.utf8))
+
+        XCTAssertEqual(config.watchlist.count, 2)
+        XCTAssertEqual(config.watchlist[0].shares, 1_500)
+        XCTAssertEqual(config.watchlist[0].cost, 38.123)
+        XCTAssertNil(config.watchlist[1].shares, "上证指数只看不持")
+        // 派生视图照旧
+        XCTAssertEqual(config.holdings["sh600036"], 1_500)
+        XCTAssertEqual(config.costs["sh600036"], 38.123)
+    }
+
+    /// 老格式允许 holdings 里有清单里没有的代码（配置窗口会把它们补成行）。
+    /// 合并时要补成条目，否则升级一次这些持仓就没了
+    func testLegacyOrphanHoldingBecomesAnItem() throws {
+        let legacy = """
+        {"watchlist":[{"code":"sh600036","name":"招商银行"}],
+         "holdings":{"sh600036":1500,"sz300750":200}}
+        """
+
+        let config = try JSONDecoder().decode(WatchlistConfig.self, from: Data(legacy.utf8))
+
+        XCTAssertEqual(config.watchlist.map(\.code), ["sh600036", "sz300750"])
+        XCTAssertEqual(config.watchlist[1].shares, 200)
+        XCTAssertEqual(config.watchlist[1].name, "", "名字留空，等用户补")
+    }
+
+    /// 写回去只有一份数据，不再有 holdings / costs 两个键
+    func testEncodesAsASingleWatchlist() throws {
+        let config = WatchlistConfig(
+            watchlist: [.init(code: "sh600036", name: "招商银行", shares: 1_500, cost: 38.123)]
+        )
+
+        let json = String(decoding: try JSONEncoder().encode(config), as: UTF8.self)
+
+        XCTAssertTrue(json.contains("\"shares\""))
+        XCTAssertTrue(json.contains("\"cost\""))
+        XCTAssertFalse(json.contains("\"holdings\""), "不该再写独立的 holdings 键")
+        XCTAssertFalse(json.contains("\"costs\""), "不该再写独立的 costs 键")
+    }
+
+    /// 新格式 round-trip
+    func testNewFormatRoundTrips() throws {
+        let config = WatchlistConfig(
+            watchlist: [.init(code: "sh512170", name: "医疗ETF华宝", shares: 1_100_000, cost: 1.234)]
+        )
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(WatchlistConfig.self, from: data)
+
+        XCTAssertEqual(decoded.watchlist[0].shares, 1_100_000)
+        XCTAssertEqual(decoded.watchlist[0].cost, 1.234)
+    }
+}

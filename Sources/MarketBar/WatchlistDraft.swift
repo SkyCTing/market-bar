@@ -42,26 +42,20 @@ struct WatchlistDraft: Equatable {
     /// 回写配置。名称为空用代码兜底（面板那一列不能是空白）；
     /// 股数缺省或非正数不进持仓表（与 `StockHoldings.shares(for:)` 的口径一致）。
     func config() -> WatchlistConfig {
-        var holdings: [String: Int] = [:]
-        var costs: [String: Double] = [:]
-        var watchlist: [WatchlistConfig.Item] = []
-
-        for row in rows where !row.code.isEmpty {
-            watchlist.append(WatchlistConfig.Item(
+        let items = rows.compactMap { row -> WatchlistConfig.Item? in
+            guard !row.code.isEmpty else { return nil }
+            // 成本只在有持仓时才有意义；没填股数的行不写成本，
+            // 免得以后补上股数时冒出一个陈年成本
+            let shares = row.shares.flatMap { $0 > 0 ? $0 : nil }
+            let cost = shares == nil ? nil : row.cost.flatMap { $0 > 0 ? $0 : nil }
+            return WatchlistConfig.Item(
                 code: row.code,
-                name: row.name.isEmpty ? row.code : row.name
-            ))
-            if let shares = row.shares, shares > 0 {
-                holdings[row.code] = shares
-                // 成本只在有持仓时才有意义；没填股数的行不写成本，
-                // 免得以后补上股数时冒出一个陈年成本
-                if let cost = row.cost, cost > 0 {
-                    costs[row.code] = cost
-                }
-            }
+                name: row.name.isEmpty ? row.code : row.name,
+                shares: shares,
+                cost: cost
+            )
         }
-
-        return WatchlistConfig(watchlist: watchlist, holdings: holdings, costs: costs)
+        return WatchlistConfig(watchlist: items)
     }
 
     // MARK: - 增删改

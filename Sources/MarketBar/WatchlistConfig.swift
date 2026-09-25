@@ -6,15 +6,41 @@ import Foundation
 /// 现在放在 `~/Library/Application Support/MarketBar/watchlist.json`，改完在菜单里点「重新载入配置」即可。
 /// 文件不存在时会自动用内置默认值生成一份，所以升级上来不会丢东西。
 struct WatchlistConfig: Codable, Equatable {
+    /// 一只标的的全部信息都在这儿 —— 名字、股数、成本放一起。
+    ///
+    /// 原来是三份按 code 索引的数据（`watchlist` 放名字、`holdings` 放股数、
+    /// `costs` 放成本），一只标的的资料散在三个地方，改一处要同步三处。
     struct Item: Codable, Equatable, Sendable {
         var code: String   // 腾讯行情代码，如 "sh512170"
         var name: String   // 显示名（写死，不用接口返回的 GBK 名称）
+        /// 持仓股数；nil / 非正 = 只看不持
+        var shares: Int?
+        /// 每股持仓成本（均价）；nil = 没设过
+        var cost: Double?
+
+        init(code: String, name: String, shares: Int? = nil, cost: Double? = nil) {
+            self.code = code
+            self.name = name
+            self.shares = shares
+            self.cost = cost
+        }
     }
 
     var watchlist: [Item]
-    var holdings: [String: Int]
-    /// 每只的持仓成本（每股均价）。没设过的不在字典里
-    var costs: [String: Double] = [:]
+
+    /// 持仓表（派生）。保留这个视图是因为不少地方按 code 索引取股数
+    var holdings: [String: Int] {
+        watchlist.reduce(into: [:]) { result, item in
+            if let shares = item.shares, shares > 0 { result[item.code] = shares }
+        }
+    }
+
+    /// 成本表（派生）
+    var costs: [String: Double] {
+        watchlist.reduce(into: [:]) { result, item in
+            if let cost = item.cost, cost > 0 { result[item.code] = cost }
+        }
+    }
 
     /// 内置默认值：首次运行会把它写成配置文件
     static let `default` = WatchlistConfig(
@@ -52,24 +78,67 @@ struct WatchlistConfig: Codable, Equatable {
             "sh512170": 1_100_000,
             "sz159813": 140_000,
             "sz159567": 110_000,
-        ],
-        costs: [:]
+        ]
     )
 
-    /// ⚠️ 必须手写：合成的解码器**不会**用属性默认值，缺键直接抛 keyNotFound。
-    /// `costs` 是后加的，老配置文件没有这个键 —— 用合成的解码器会把用户的整份清单
-    /// 当成坏文件、备份走再回退成内置默认值。
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        watchlist = try container.decode([Item].self, forKey: .watchlist)
-        holdings = try container.decode([String: Int].self, forKey: .holdings)
-        costs = try container.decodeIfPresent([String: Double].self, forKey: .costs) ?? [:]
+    /// 只有 `watchlist` 会被写出去；`holdings` / `costs` 只是给老文件读的键
+    enum CodingKeys: String, CodingKey {
+        case watchlist
+        /// 老格式才有的两个键（见 init(from:)）
+        case holdings, costs
     }
 
-    init(watchlist: [Item], holdings: [String: Int], costs: [String: Double] = [:]) {  // swiftlint:disable:this line_length
-        self.watchlist = watchlist
-        self.holdings = holdings
-        self.costs = costs
+    /// ⚠️ 必须手写：合成的解码器**不会**用属性默认值，老文件缺 `shares` / `cost`
+    /// 两个键时直接抛 keyNotFound —— 那会把用户的整份清单当成坏文件、
+    /// 备份走再回退成内置默认值。
+    ///
+    /// 老格式把股数和成本放在 `holdings` / `costs` 两个独立字典里，
+    /// 这里读进来合并进各自的条目，写回去就成新格式了。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let items = try container.decode([Item].self, forKey: .watchlist)
+        let legacyShares = try container.decodeIfPresent([String: Int].self, forKey: .holdings) ?? [:]
+        let legacyCosts = try container.decodeIfPresent([String: Double].self, forKey: .costs) ?? [:]
+
+        // ⚠️ 老格式允许 holdings / costs 里有清单里没有的代码（配置窗口会把这类补成行
+        // 显示，免得它们看不见就被静默丢掉）。合并时要把它们补成条目，
+        // 否则升级一次这些持仓就没了
+        watchlist = Self.merging(items, shares: legacyShares, costs: legacyCosts)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(watchlist, forKey: .watchlist)
+    }
+
+    /// 便利构造：从「代码 → 股数 / 成本」两张表拼出来（老的调用点还能用）。
+    /// 和 `init(from:)` 一样，清单里没有的代码也要补成条目
+    init(watchlist: [Item], holdings: [String: Int] = [:], costs: [String: Double] = [:]) {
+        // ⚠️ 不能写 self.init(watchlist: watchlist) —— 那个签名和这里同名，
+        // 会解析成它自己，直接栈溢出（signal 11）
+        self.watchlist = Self.merging(watchlist, shares: holdings, costs: costs)
+    }
+
+    /// 把「代码 → 股数 / 成本」两张表合并进条目；清单里没有的代码补成新条目
+    private static func merging(
+        _ items: [Item],
+        shares: [String: Int],
+        costs: [String: Double]
+    ) -> [Item] {
+        var merged = items.map { item -> Item in
+            var copy = item
+            if copy.shares == nil { copy.shares = shares[item.code] }
+            if copy.cost == nil { copy.cost = costs[item.code] }
+            return copy
+        }
+        let listed = Set(items.map(\.code))
+        let orphans = Set(shares.keys).union(costs.keys).subtracting(listed).sorted()
+        // 名字留空：配置窗口里是个空单元格 + 占位符，提示用户去补；
+        // 写回时 WatchlistDraft 会用代码兜底，所以不会存成空白名
+        merged.append(contentsOf: orphans.map {
+            Item(code: $0, name: "", shares: shares[$0], cost: costs[$0])
+        })
+        return merged
     }
 
     static var fileURL: URL {
