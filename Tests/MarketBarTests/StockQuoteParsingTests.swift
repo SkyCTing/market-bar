@@ -186,12 +186,14 @@ final class StockQuoteParsingTests: XCTestCase {
     func testWatchlistURLContainsEveryCodeAsSingleBatchRequest() {
         let url = StockWatchlist.url.absoluteString
 
-        // 1 个指数 + 4 只 ETF + 11 只个股
-        XCTAssertEqual(StockWatchlist.entries.count, 16)
+        // 用运行时清单自洽地校验（清单可能来自你改过的配置文件，不该拿默认值去比）
         XCTAssertTrue(url.hasPrefix("https://qt.gtimg.cn/q="))
         for entry in StockWatchlist.entries {
             XCTAssertTrue(url.contains(entry.code), "缺少 \(entry.code)")
         }
-        XCTAssertEqual(url.filter { $0 == "," }.count, StockWatchlist.entries.count - 1)
+        XCTAssertEqual(url.filter { $0 == "," }.count, max(0, StockWatchlist.entries.count - 1))
+
+        // 内置默认值单独校验
+        XCTAssertEqual(WatchlistConfig.default.watchlist.count, 16)
     }
 }

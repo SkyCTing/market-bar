@@ -126,36 +126,31 @@ struct MarketData {
 
 // MARK: - 自选清单
 
-/// 悬浮面板「自选行情」分区写死的标的，改这个数组即可增删。
+/// 悬浮面板「自选行情」分区的标的清单。
+/// 运行时从配置文件读（`~/Library/Application Support/MarketBar/watchlist.json`），
+/// 默认值见 `WatchlistConfig.default`；菜单里「重新载入配置」可刷新。
 enum StockWatchlist {
     struct Entry: Sendable {
-        let code: String   // 腾讯行情代码，如 "sh512170"，同时用作面板行的字典 key
-        let name: String   // 显示名写死：腾讯返回的名称是 GBK 中文，不解析它
+        let code: String
+        let name: String
     }
 
-    static let entries: [Entry] = [
-        Entry(code: "sh000001", name: "上证指数"),
-        Entry(code: "sh512170", name: "医疗ETF华宝"),
-        Entry(code: "sz159813", name: "半导体ETF鹏华"),
-        // 名称太长会挤掉右侧数值列（面板宽 300pt），所以省掉基金公司后缀
-        Entry(code: "sh513130", name: "恒生科技ETF"),
-        Entry(code: "sz159567", name: "港股创新药ETF"),
-        Entry(code: "sz300657", name: "弘信电子"),
-        Entry(code: "sz300375", name: "鹏翎股份"),
-        Entry(code: "sh600036", name: "招商银行"),
-        Entry(code: "sz000564", name: "供销大集"),
-        Entry(code: "sz300803", name: "指南针"),
-        Entry(code: "sz300468", name: "四方精创"),
-        Entry(code: "sz002657", name: "中科金财"),
-        Entry(code: "sz300339", name: "润和软件"),
-        Entry(code: "sh603406", name: "天富龙"),
-        Entry(code: "sz301609", name: "山大电力"),
-        Entry(code: "sz000034", name: "神州数码"),
-    ]
+    /// 启动时写一次，之后只在主线程通过 reload() 改
+    nonisolated(unsafe) static var entries: [Entry] = loadEntries()
 
     static var codes: [String] { entries.map(\.code) }
 
-    static let url = URL(string: "https://qt.gtimg.cn/q=" + entries.map(\.code).joined(separator: ","))!
+    static var url: URL {
+        URL(string: "https://qt.gtimg.cn/q=" + entries.map(\.code).joined(separator: ","))!
+    }
+
+    static func loadEntries() -> [Entry] {
+        WatchlistConfig.load().watchlist.map { Entry(code: $0.code, name: $0.name) }
+    }
+
+    static func reload() {
+        entries = loadEntries()
+    }
 }
 
 /// 单只标的的行情。价格/涨跌字段与 `MarketData.QuoteRow` 一一对应，
@@ -852,6 +847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        menu.addItem(makeWatchlistMenuItem())
         menu.addItem(makeReminderMenuItem())
         menu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
@@ -886,6 +882,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
         restartTimer()
         saveSettings()
+    }
+
+    // MARK: - 自选配置
+
+    private func makeWatchlistMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "自选配置", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "自选配置")
+
+        let open = NSMenuItem(title: "打开配置文件…", action: #selector(openWatchlistConfig), keyEquivalent: "")
+        open.target = self
+        submenu.addItem(open)
+
+        let reload = NSMenuItem(title: "重新载入配置", action: #selector(reloadWatchlistConfig), keyEquivalent: "")
+        reload.target = self
+        submenu.addItem(reload)
+
+        menu.setSubmenu(submenu, for: item)
+        return item
+    }
+
+    /// 用默认编辑器打开配置文件（不存在会先按默认值生成一份）
+    @objc private func openWatchlistConfig() {
+        let url = WatchlistConfig.fileURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            WatchlistConfig.load().write(to: url)
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func reloadWatchlistConfig() {
+        StockWatchlist.reload()
+        StockHoldings.reload()
+        currentStockQuotes = [:]
+        dailyBars = [:]
+        dailyBarsSessionKey = ""
+        if hoverPanel?.isVisible == true { updateHoverPanelContent() }
     }
 
     // MARK: - 提醒

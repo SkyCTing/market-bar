@@ -74,8 +74,8 @@ final class StockHoldingsTests: XCTestCase {
     /// 持仓表与自选清单是两份独立的表，必须保持「持仓 ⊆ 自选」：
     /// 否则那只标的既不会有行、也拿不到行情，会静默不计入合计。
     func testEveryHoldingIsAlsoInTheWatchlist() {
-        let watchlist = Set(StockWatchlist.codes)
-        let missing = Set(StockHoldings.sharesByCode.keys).subtracting(watchlist)
+        let watchlist = Set(WatchlistConfig.default.watchlist.map(\.code))
+        let missing = Set(WatchlistConfig.default.holdings.keys).subtracting(watchlist)
         XCTAssertTrue(missing.isEmpty, "这些持仓不在自选清单里，会静默漏算：\(missing.sorted())")
     }
 
@@ -155,5 +155,65 @@ final class StockHoldingsTests: XCTestCase {
         XCTAssertEqual(row.shares, 880_000)
         XCTAssertEqual(row.sharesText, "880,000")
         XCTAssertEqual(row.profitLossText, "-6,160")
+    }
+}
+
+/// 配置文件（自选清单 + 持仓）
+final class WatchlistConfigTests: XCTestCase {
+    private func tempURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("watchlist-\(UUID().uuidString).json")
+    }
+
+    /// 文件不存在时按默认值生成一份，返回默认配置
+    func testLoadCreatesFileFromDefaults() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let config = WatchlistConfig.load(from: url)
+
+        XCTAssertEqual(config.watchlist.count, 16)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "应该顺手生成配置文件")
+        XCTAssertEqual(config, WatchlistConfig.default)
+    }
+
+    /// 改过的配置能读回来
+    func testRoundTrip() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let custom = WatchlistConfig(
+            watchlist: [.init(code: "sh600519", name: "贵州茅台")],
+            holdings: ["sh600519": 100]
+        )
+        custom.write(to: url)
+
+        let loaded = WatchlistConfig.load(from: url)
+
+        XCTAssertEqual(loaded.watchlist.map(\.code), ["sh600519"])
+        XCTAssertEqual(loaded.holdings["sh600519"], 100)
+    }
+
+    /// 配置文件损坏时回退默认值，并把坏文件改名留证
+    func testCorruptFileFallsBackToDefaults() throws {
+        let url = tempURL()
+        let brokenURL = url.deletingPathExtension().appendingPathExtension("broken.json")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: brokenURL)
+        }
+        try Data("这不是 json".utf8).write(to: url)
+
+        let config = WatchlistConfig.load(from: url)
+
+        XCTAssertEqual(config, WatchlistConfig.default)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: brokenURL.path), "坏文件应该被改名保留")
+    }
+
+    /// 内置默认值里，持仓必须是自选的子集（否则那只既不显示也不计入合计）
+    func testDefaultHoldingsAreSubsetOfDefaultWatchlist() {
+        let watchlist = Set(WatchlistConfig.default.watchlist.map(\.code))
+        let missing = Set(WatchlistConfig.default.holdings.keys).subtracting(watchlist)
+        XCTAssertTrue(missing.isEmpty, "这些持仓不在自选清单里：\(missing.sorted())")
     }
 }

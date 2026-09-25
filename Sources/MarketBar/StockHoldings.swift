@@ -8,7 +8,15 @@ import Foundation
 /// ⚠️ 持仓代码必须是 `StockWatchlist` 的子集：面板的行由自选清单生成，
 /// 持仓表里多出来的代码既不会有行、也拿不到行情，会静默不计入合计（有测试锁住这条）。
 enum StockHoldings {
-    static let sharesByCode: [String: Int] = [
+    /// 运行时从配置文件读；菜单里「重新载入配置」可刷新。
+    /// `nonisolated(unsafe)`：启动时写一次，之后只在主线程通过 reload() 改，读的地方都是主线程
+    nonisolated(unsafe) static var sharesByCode: [String: Int] = WatchlistConfig.load().holdings
+
+    static func reload() {
+        sharesByCode = WatchlistConfig.load().holdings
+    }
+
+    private static let builtInShares: [String: Int] = [
         "sh600036": 1_500,
         "sz300803": 435,
         "sz000034": 980,
