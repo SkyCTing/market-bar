@@ -550,6 +550,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 微信未读数（面板左右两个徽标用）
     private var unreadCounts = UnreadBadge.Counts()
+    private var lastUnreadFetch = Date.distantPast
+    private var unreadFailures = 0
+    /// 未读不必每秒看一次；而且 `fetch()` 是主线程同步 AX IPC，
+    /// 实测均值 1.2ms、最坏 42ms —— 微信卡住时会连带拖住金价刷新和动画
+    private static let unreadFetchInterval: TimeInterval = 3
+    /// 连续失败这么多次才把徽标显示成「读不到」，免得一次瞬时失败就闪
+    private static let unreadFailureTolerance = 3
     /// 法定节假日（"2026-10-01" → "国庆节"），每天刷新一次，落在本地
     private var holidays: [String: String] = [:]
     /// 调休补班日（这些周六/周日要上班，提醒照常）
@@ -660,8 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastUpdateTime = Date()
         updateStatusTitle()
         refreshHolidaysIfNeeded()
-        unreadCounts = UnreadBadge.fetch()
-        floatingCharacterController.updateUnread(main: unreadCounts.weChat, second: unreadCounts.weChatSecond)
+        refreshUnreadIfNeeded()
         updateFloatingCharacter()
         checkPriceAlerts()
 
@@ -716,6 +722,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.updateHoverPanelContent()
             }
         }
+    }
+
+    /// 微信未读：降频到 3 秒一次，并且读失败时先沿用上一次的显示
+    private func refreshUnreadIfNeeded() {
+        guard Date().timeIntervalSince(lastUnreadFetch) >= Self.unreadFetchInterval else { return }
+        lastUnreadFetch = Date()
+
+        let fetched = UnreadBadge.fetch()
+        unreadFailures = fetched.isUnavailable ? unreadFailures + 1 : 0
+
+        let displayed = UnreadBadge.displayed(
+            fetched,
+            previous: unreadCounts,
+            failures: unreadFailures,
+            tolerance: Self.unreadFailureTolerance
+        )
+        unreadCounts = displayed
+        floatingCharacterController.updateUnread(main: displayed.weChat, second: displayed.weChatSecond)
     }
 
     private func updateStatusTitle() {
@@ -970,17 +994,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showWatchlistSettings() {
         let controller = watchlistSettings ?? {
             let created = WatchlistSettingsController()
-            created.onSave = { [weak self] config in self?.saveWatchlistConfig(config) }
+            created.onSave = { [weak self] config in self?.saveWatchlistConfig(config) ?? false }
             return created
         }()
         watchlistSettings = controller
         controller.show()
     }
 
-    /// 配置窗口点「保存」：写盘 + 重载 + 作废缓存里的行情
-    private func saveWatchlistConfig(_ config: WatchlistConfig) {
-        config.write()
+    /// 配置窗口点「保存」：写盘 + 重载 + 作废缓存里的行情。
+    /// 返回是否写成功 —— 失败时窗口不关，用户的改动还留在界面上
+    private func saveWatchlistConfig(_ config: WatchlistConfig) -> Bool {
+        guard config.write() else {
+            let alert = NSAlert()
+            alert.messageText = "配置没能保存"
+            alert.informativeText = "写不进 \(WatchlistConfig.fileURL.path)\n请检查目录权限或磁盘空间，改动还留在窗口里。"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
+            return false
+        }
         applyWatchlistConfig()
+        return true
     }
 
     /// 用默认编辑器打开配置文件（不存在会先按默认值生成一份）
@@ -1938,8 +1971,8 @@ final class HoverPanel {
         container.addSubview(rightBadge)
         weChatBadge = leftBadge
         weChatSecondBadge = rightBadge
-        leftBadge.update(count: data.unread.weChat)
-        rightBadge.update(count: data.unread.weChatSecond)
+        leftBadge.update(data.unread.weChat)
+        rightBadge.update(data.unread.weChatSecond)
 
         // --- Divider 2 ---
         let divider2 = makeDivider()
@@ -2155,8 +2188,8 @@ final class HoverPanel {
                 formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
             stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
             stockTitleLabels[quote.code]?.stringValue = quote.name
-            weChatBadge?.update(count: data.unread.weChat)
-        weChatSecondBadge?.update(count: data.unread.weChatSecond)
+            weChatBadge?.update(data.unread.weChat)
+        weChatSecondBadge?.update(data.unread.weChatSecond)
 
         stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
             stockVolumeLabels[quote.code]?.textColor =

@@ -250,7 +250,15 @@ enum ReminderScheduler {
         components.minute = reminder.minute
         components.second = reminder.second
 
-        for offset in 0...370 {
+        // 「每 N 天」的搜索窗口要跟着 N 走：固定 370 天时，N > 370 永远找不到下一次，
+        // 那条提醒就成了菜单上看着正常、却永远不响的死条（填个 400 天就会踩到）。
+        // 下一次最多在 N 天内出现（对齐到锚点），再加几天余量兜住「跳过节假日」连跳
+        var horizon = 370
+        if case .everyDays(let interval) = reminder.repeatRule {
+            horizon = max(horizon, max(1, interval) + 7)
+        }
+
+        for offset in 0...horizon {
             guard let day = calendar.date(byAdding: .day, value: offset, to: date) else { continue }
             var dayComponents = calendar.dateComponents([.year, .month, .day, .weekday], from: day)
             guard let year = dayComponents.year, let month = dayComponents.month, let dayOfMonth = dayComponents.day else { continue }

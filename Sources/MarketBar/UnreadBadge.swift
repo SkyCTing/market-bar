@@ -9,10 +9,31 @@ import ApplicationServices
 ///   主微信 com.tencent.xinWeChat ｜ 微信小号 com.tencent.xinWeChatSecond
 ///
 /// 需要「辅助功能」权限（系统设置 → 隐私与安全性 → 辅助功能）。
+/// 一侧未读的状态。
+///
+/// ⚠️「读不到」和「没有未读」必须分开：以前两者都是 `nil`，于是权限被吊销、
+/// 或微信一时读不出来时，界面和「本来就没消息」长得一模一样 —— 用户无从察觉
+/// 自己再也收不到未读提醒了。
+enum UnreadState: Equatable {
+    case count(Int)
+    case none
+    case unavailable
+}
+
 enum UnreadBadge {
     struct Counts: Equatable {
-        var weChat: Int?
-        var weChatSecond: Int?
+        var weChat: UnreadState = .unavailable
+        var weChatSecond: UnreadState = .unavailable
+
+        /// 两侧都读不到，才算「这一轮整体失败」
+        var isUnavailable: Bool { weChat == .unavailable && weChatSecond == .unavailable }
+    }
+
+    /// 读失败时沿用上一次的显示：一次瞬时失败不该让红数字闪成灰圈。
+    /// 连续失败满 `tolerance` 次才认账，这时才显示成「读不到」
+    static func displayed(_ fetched: Counts, previous: Counts, failures: Int, tolerance: Int) -> Counts {
+        guard fetched.isUnavailable, failures < tolerance else { return fetched }
+        return previous
     }
 
     static let mainBundleID = "com.tencent.xinWeChat"
@@ -58,7 +79,7 @@ enum UnreadBadge {
         return value
     }
 
-    /// 读两个微信的未读数（读不到就是 nil，界面据此不显示）
+    /// 读两个微信的未读数
     @MainActor
     static func fetch() -> Counts {
         var counts = Counts()
@@ -66,9 +87,9 @@ enum UnreadBadge {
             guard let bundleID = app.bundleIdentifier else { continue }
             switch bundleID {
             case "com.tencent.xinWeChat":
-                counts.weChat = statusItemTitle(pid: app.processIdentifier)
+                counts.weChat = statusItemState(pid: app.processIdentifier)
             case "com.tencent.xinWeChatSecond":
-                counts.weChatSecond = statusItemTitle(pid: app.processIdentifier)
+                counts.weChatSecond = statusItemState(pid: app.processIdentifier)
             default:
                 continue
             }
@@ -79,28 +100,30 @@ enum UnreadBadge {
     /// 取某个进程的「菜单栏附加项」（状态项）里那一项的标题。
     /// ⚠️ 必须用 AXExtrasMenuBar：状态项挂在 app 的 extras 菜单栏上，
     /// 读 kAXMenuBar 只会拿到 App 自己的菜单（Apple/文件/编辑…），读 kAXChildren 只能拿到窗口。
-    private static func statusItemTitle(pid: pid_t) -> Int? {
+    /// AX 读失败 → `.unavailable`（没权限 / 进程刚起来还没建状态项）；
+    /// 读到了但那一项不是数字 → `.none`（真的没有未读）
+    private static func statusItemState(pid: pid_t) -> UnreadState {
         let appElement = AXUIElementCreateApplication(pid)
 
         var extrasRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             appElement, "AXExtrasMenuBar" as CFString, &extrasRef
-        ) == .success, let extrasRef else { return nil }
+        ) == .success, let extrasRef else { return .unavailable }
         let extrasBar = extrasRef as! AXUIElement
 
         var childrenRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             extrasBar, kAXChildrenAttribute as CFString, &childrenRef
-        ) == .success, let items = childrenRef as? [AXUIElement] else { return nil }
+        ) == .success, let items = childrenRef as? [AXUIElement] else { return .unavailable }
 
         for item in items {
             var titleRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(item, kAXTitleAttribute as CFString, &titleRef) == .success,
                let count = count(fromStatusTitle: titleRef as? String) {
-                return count
+                return .count(count)
             }
         }
-        return nil
+        return .none
     }
 }
 
@@ -144,14 +167,19 @@ final class UnreadCountBadgeView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 有未读：红底 + 数字（超过 99 显示 99+）；没有未读：**仍然显示**一颗灰圈（可点击打开微信）
-    func update(count: Int?) {
-        guard let count, count > 0 else {
+    /// 有未读：红底 + 数字（超过 99 显示 99+）；没有未读：灰圈（仍可点击打开微信）；
+    /// 读不到：深一号的圈 + 「!」，和「没有未读」区分开
+    func update(_ state: UnreadState) {
+        switch state {
+        case .count(let count):
+            label.stringValue = count > 99 ? "99+" : "\(count)"
+            layer?.backgroundColor = NSColor(calibratedRed: 0.92, green: 0.22, blue: 0.2, alpha: 1).cgColor
+        case .none:
             label.stringValue = ""
             layer?.backgroundColor = NSColor(white: 0.45, alpha: 0.55).cgColor
-            return
+        case .unavailable:
+            label.stringValue = "!"
+            layer?.backgroundColor = NSColor(white: 0.25, alpha: 0.7).cgColor
         }
-        label.stringValue = count > 99 ? "99+" : "\(count)"
-        layer?.backgroundColor = NSColor(calibratedRed: 0.92, green: 0.22, blue: 0.2, alpha: 1).cgColor
     }
 }

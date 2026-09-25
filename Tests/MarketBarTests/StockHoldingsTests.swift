@@ -210,6 +210,30 @@ final class WatchlistConfigTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: brokenURL.path), "坏文件应该被改名保留")
     }
 
+    /// ⚠️ 回归：原来坏文件改名成 broken.json，已经有同名副本时 moveItem 会失败被吞掉，
+    /// 紧接着就被默认值覆盖 —— 用户这份配置一个字节都不剩
+    func testCorruptFileIsBackedUpEvenWhenAnOlderBackupExists() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watchlist-backup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("watchlist.json")
+        let olderBackup = dir.appendingPathComponent("watchlist.broken.json")
+        try Data("上一轮就坏了的配置".utf8).write(to: olderBackup)
+        try Data("这一轮坏掉的配置".utf8).write(to: url)
+
+        _ = WatchlistConfig.load(from: url)
+
+        let backups = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            .filter { $0.contains("broken") }
+        XCTAssertGreaterThanOrEqual(backups.count, 2, "本次这份必须也留下副本，实际只有 \(backups)")
+
+        let contents = try backups.compactMap { try? String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8) }
+        XCTAssertTrue(contents.contains("这一轮坏掉的配置"), "本次的内容没被保住：\(contents)")
+        XCTAssertTrue(contents.contains("上一轮就坏了的配置"), "旧副本不该被覆盖")
+    }
+
     /// 内置默认值里，持仓必须是自选的子集（否则那只既不显示也不计入合计）
     func testDefaultHoldingsAreSubsetOfDefaultWatchlist() {
         let watchlist = Set(WatchlistConfig.default.watchlist.map(\.code))

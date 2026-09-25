@@ -68,6 +68,16 @@ enum FloatingCharacterPresentationMode: Equatable {
 struct FloatingCharacterDockLayout {
     static let snapDistance: CGFloat = 36
     static let restoreDistance: CGFloat = 48
+    /// 已经贴边了还往外拖这么远，就完全收起（第二段）
+    static let hideDistance: CGFloat = 24
+
+    /// 贴边之后继续往外拖 = 要完全隐藏
+    static func shouldHide(horizontalDrag: CGFloat, from edge: FloatingCharacterDockEdge) -> Bool {
+        switch edge {
+        case .left: return horizontalDrag <= -hideDistance
+        case .right: return horizontalDrag >= hideDistance
+        }
+    }
 
     static func edge(for pointer: NSPoint, in visibleFrame: NSRect) -> FloatingCharacterDockEdge? {
         guard pointer.y >= visibleFrame.minY, pointer.y <= visibleFrame.maxY else { return nil }
@@ -389,23 +399,6 @@ struct FloatingCharacterCountdownLayout {
     static var occupiedHeight: CGFloat { height + spacing }
 }
 
-/// 未读徽标在人物视图里的相对位置。
-///
-/// ⚠️ 坑：约束求解用的是**以左上角为原点**的翻转空间，`.bottom` 那一路取到的是
-/// 「离顶边多远」。所以「离底边 76%（头两侧）」必须写成 `1 - 0.76 = 0.24`；
-/// 直接写 0.76 会把徽标画到脚边。横向的 `.trailing` 不受影响，所以只有 Y 会错，
-/// 更不容易发现。`FloatingCharacterBadgeLayoutTests` 实测落点把这条钉住。
-enum FloatingCharacterBadgeLayout {
-    /// 徽标中心离**底边**多远（0…1）。0.76 ≈ 头两侧
-    static let centerYFromBottom: CGFloat = 0.76
-    /// 两颗徽标各自的中心 X（占视图宽的比例）
-    static let mainCenterX: CGFloat = 0.30
-    static let secondCenterX: CGFloat = 0.70
-
-    /// 喂给 `.centerY == multiplier × .bottom` 的乘数
-    static var centerYMultiplier: CGFloat { 1 - centerYFromBottom }
-}
-
 struct FloatingCharacterAmbientMotion {
     static let scaleFrom: CGFloat = 0.985
     static let scaleTo: CGFloat = 1.020
@@ -610,7 +603,8 @@ final class FloatingCharacterController: NSObject {
     private var marketReactionDetector = FloatingCharacterMarketReactionDetector()
     private var clickSequence = FloatingCharacterClickSequence()
     private var emotion: FloatingCharacterEmotion = .happy
-    private var isVisible = false
+    /// `private(set)`：提醒那边要根据「人物是不是收起来了」决定要不要提示
+    private(set) var isVisible = false
     private var isScreenAwake = true
     private var isSessionActive = true
     private var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -639,9 +633,9 @@ final class FloatingCharacterController: NSObject {
     private let mainBadge = UnreadCountBadgeView()
     private let secondBadge = UnreadCountBadgeView()
 
-    func updateUnread(main: Int?, second: Int?) {
-        mainBadge.update(count: main)
-        secondBadge.update(count: second)
+    func updateUnread(main: UnreadState, second: UnreadState) {
+        mainBadge.update(main)
+        secondBadge.update(second)
     }
 
     nonisolated(unsafe) private var actionTimer: Timer?
@@ -716,13 +710,11 @@ final class FloatingCharacterController: NSObject {
             ),
             NSLayoutConstraint(
                 item: mainBadge, attribute: .centerY, relatedBy: .equal,
-                toItem: characterView, attribute: .bottom,
-                multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
+                toItem: characterView, attribute: .bottom, multiplier: 0.76, constant: 0
             ),
             NSLayoutConstraint(
                 item: secondBadge, attribute: .centerY, relatedBy: .equal,
-                toItem: characterView, attribute: .bottom,
-                multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
+                toItem: characterView, attribute: .bottom, multiplier: 0.76, constant: 0
             ),
         ])
         characterView.onDragBegan = { [weak self] in
@@ -1488,6 +1480,12 @@ final class FloatingCharacterController: NSObject {
             updateDockCandidate(at: pointer, screen: targetScreen)
 
         case let .docked(edge):
+            // 两段式：第一段拖到边框变成「价格牌 + 偷看脑袋」；已经贴边了还往外拖，
+            // 第二段才是完全收起（用户要的「再拖就完全隐藏」，开会时用）
+            if hidesAtEdge, FloatingCharacterDockLayout.shouldHide(horizontalDrag: delta.x, from: edge) {
+                hideAtEdge()
+                return
+            }
             guard !FloatingCharacterDockLayout.shouldRestore(
                 horizontalDrag: delta.x,
                 from: edge
@@ -1533,16 +1531,9 @@ final class FloatingCharacterController: NSObject {
                 FloatingCharacterDockLayout.edge(for: pointer, in: $0.visibleFrame)
             }
             if let edge, let targetScreen {
+                enterDockedMode(edge: edge, screen: targetScreen)
                 pendingDockEdge = nil
                 pendingDockScreen = nil
-                // 开了「拖到边缘自动隐藏」就把人收起来（用户要的一键隐藏），
-                // 而不是贴边偷看；想再见到它走菜单「浮动窗口 → 显示人物」
-                if hidesAtEdge {
-                    setVisible(false)
-                    onAutoHidden?()
-                    return
-                }
-                enterDockedMode(edge: edge, screen: targetScreen)
                 return
             }
         }
@@ -1653,6 +1644,13 @@ final class FloatingCharacterController: NSObject {
                 self.finishDragSettlement(after: FloatingCharacterDragPhysics.landingDuration)
             }
         }
+    }
+
+    /// 完全收起人物（贴边之后的第二段）。走的是和菜单「显示人物」同一条路，
+    /// AppDelegate 那边只要把自己那份开关状态同步掉即可
+    private func hideAtEdge() {
+        setVisible(false)
+        onAutoHidden?()
     }
 
     private func restoreFullCharacter(from edge: FloatingCharacterDockEdge, at pointer: NSPoint) {

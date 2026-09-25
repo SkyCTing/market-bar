@@ -62,30 +62,60 @@ struct WatchlistConfig: Codable, Equatable {
             .appendingPathComponent("watchlist.json")
     }
 
-    /// 读配置：文件不存在就用默认值生成一份；文件损坏则回退默认值（并保留坏文件供排查）
+    /// 读配置：文件不存在就用默认值生成一份；文件损坏则**先留副本**再回退默认值
     static func load(from url: URL = fileURL) -> WatchlistConfig {
-        if let data = try? Data(contentsOf: url) {
-            if let decoded = try? JSONDecoder().decode(WatchlistConfig.self, from: data) {
-                return decoded
-            }
-            // 坏文件：改名留证，避免每次启动都解析失败
-            try? FileManager.default.moveItem(
-                at: url,
-                to: url.deletingPathExtension().appendingPathExtension("broken.json")
-            )
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let config = WatchlistConfig.default
+            config.write(to: url)
+            return config
         }
+
+        if let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode(WatchlistConfig.self, from: data) {
+            return decoded
+        }
+
+        // 走到这里说明文件在、但读不出来或者解不开。
+        //
+        // ⚠️ 原来的写法是「改名成 broken.json」，两种情况会静默吃掉用户配置：
+        //   1. broken.json 已经存在 → moveItem 失败被 try? 吞掉 → 紧接着被默认值覆盖
+        //   2. Data(contentsOf:) 本身抛错 → 改名那段根本不在执行路径上 → 同样直接覆盖
+        // 现在改成**先复制一份带时间戳的副本**（绝不覆盖已有副本）再回退
+        backUpCorruptFile(url)
+
         let config = WatchlistConfig.default
         config.write(to: url)
         return config
     }
 
-    func write(to url: URL = fileURL) {
+    /// 给读不出来的配置留副本。用 copy 不用 move：万一下面的写入也失败，
+    /// 原文件还在。名字撞了就加时间戳，绝不覆盖已有的副本。
+    private static func backUpCorruptFile(_ url: URL) {
+        let base = url.deletingPathExtension()
+        let stamp = Int(Date().timeIntervalSince1970)
+        for candidate in [
+            base.appendingPathExtension("broken.json"),
+            base.appendingPathExtension("broken-\(stamp).json"),
+        ] where !FileManager.default.fileExists(atPath: candidate.path) {
+            if (try? FileManager.default.copyItem(at: url, to: candidate)) != nil { return }
+        }
+    }
+
+    /// 写配置。返回是否真的写成功了 —— 原来吞掉所有错误，
+    /// 「磁盘满 / 目录不可写」时会伪装成保存成功，用户的改动无声消失。
+    @discardableResult
+    func write(to url: URL = fileURL) -> Bool {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? encoder.encode(self).write(to: url, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try encoder.encode(self).write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 }

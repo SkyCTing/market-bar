@@ -856,76 +856,47 @@ final class FloatingCharacterCountdownLayoutTests: XCTestCase {
     }
 }
 
-// MARK: - 未读徽标的位置
 
-/// 徽标曾经被画到人物**脚边**：约束求解用的是以左上角为原点的翻转空间，
-/// `.centerY == 0.76 × .bottom` 实际是「距顶 76%」。这条实测落点，别再踩回去。
-@MainActor
-final class FloatingCharacterBadgeLayoutTests: XCTestCase {
-    private func laidOutBadge(in size: CGFloat) -> NSView {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
-        let badge = NSView()
-        badge.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(badge)
-        NSLayoutConstraint.activate([
-            NSLayoutConstraint(
-                item: badge, attribute: .centerX, relatedBy: .equal,
-                toItem: container, attribute: .trailing,
-                multiplier: FloatingCharacterBadgeLayout.mainCenterX, constant: 0
-            ),
-            NSLayoutConstraint(
-                item: badge, attribute: .centerY, relatedBy: .equal,
-                toItem: container, attribute: .bottom,
-                multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
-            ),
-            badge.widthAnchor.constraint(equalToConstant: 22),
-            badge.heightAnchor.constraint(equalToConstant: 22),
-        ])
-        container.layoutSubtreeIfNeeded()
-        return badge
+// MARK: - 贴边之后往外拖 = 完全隐藏（两段式）
+
+final class FloatingCharacterDockHideTests: XCTestCase {
+    /// 第一段：拖到边框 → 变小（贴边偷看），这一步和以前一样
+    func testDraggingToTheEdgeStillDocks() {
+        XCTAssertNotNil(FloatingCharacterDockLayout.edge(for: NSPoint(x: 10, y: 400), in: bigScreen))
+        XCTAssertNotNil(FloatingCharacterDockLayout.edge(for: NSPoint(x: 1_495, y: 400), in: bigScreen))
+        XCTAssertNil(FloatingCharacterDockLayout.edge(for: NSPoint(x: 700, y: 400), in: bigScreen))
     }
 
-    /// 非翻转坐标里 y 从**底边**起算，人物是头朝上的：徽标得落在上半部分
-    func testBadgeSitsNearTheHeadNotTheFeet() {
-        for size in [160.0, 240.0, 320.0] {
-            let badge = laidOutBadge(in: size)
-            let fromBottom = badge.frame.midY / size
+    /// 第二段：已经贴边了还往外拖 → 完全隐藏
+    func testDraggingFurtherOutwardHides() {
+        let distance = FloatingCharacterDockLayout.hideDistance
 
-            XCTAssertEqual(fromBottom, FloatingCharacterBadgeLayout.centerYFromBottom, accuracy: 0.01,
-                           "\(Int(size)) 档位的徽标位置不对")
-            XCTAssertGreaterThan(fromBottom, 0.6, "\(Int(size)) 档位的徽标跑到脚边去了")
+        XCTAssertTrue(FloatingCharacterDockLayout.shouldHide(horizontalDrag: distance, from: .right))
+        XCTAssertTrue(FloatingCharacterDockLayout.shouldHide(horizontalDrag: -distance, from: .left))
+    }
+
+    /// 往内拖是「恢复成完整人物」，不能被当成隐藏。
+    /// 右侧贴边时**正**方向才是往外（往屏幕外），左侧贴边镜像
+    func testInwardDragIsNeverHide() {
+        for drag in [-200.0, -60, -1, 0, 1, 23] as [CGFloat] {
+            XCTAssertFalse(
+                FloatingCharacterDockLayout.shouldHide(horizontalDrag: drag, from: .right),
+                "右侧贴边时 \(drag) 是往屏幕内，不该隐藏"
+            )
+        }
+        for drag in [200.0, 60, 1, 0, -1, -23] as [CGFloat] {
+            XCTAssertFalse(
+                FloatingCharacterDockLayout.shouldHide(horizontalDrag: drag, from: .left),
+                "左侧贴边时 \(drag) 是往屏幕内，不该隐藏"
+            )
         }
     }
 
-    /// 横向不受翻转影响：0.30 / 0.70 就是左 / 右
-    func testBadgeSitsOnTheCorrectSideHorizontally() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
-        let left = NSView()
-        let right = NSView()
-        for (index, badge) in [left, right].enumerated() {
-            badge.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(badge)
-            NSLayoutConstraint.activate([
-                NSLayoutConstraint(
-                    item: badge, attribute: .centerX, relatedBy: .equal,
-                    toItem: container, attribute: .trailing,
-                    multiplier: index == 0
-                        ? FloatingCharacterBadgeLayout.mainCenterX
-                        : FloatingCharacterBadgeLayout.secondCenterX,
-                    constant: 0
-                ),
-                NSLayoutConstraint(
-                    item: badge, attribute: .centerY, relatedBy: .equal,
-                    toItem: container, attribute: .bottom,
-                    multiplier: FloatingCharacterBadgeLayout.centerYMultiplier, constant: 0
-                ),
-                badge.widthAnchor.constraint(equalToConstant: 22),
-                badge.heightAnchor.constraint(equalToConstant: 22),
-            ])
-        }
-        container.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(left.frame.midX, 60, accuracy: 0.5, "左＝主微信")
-        XCTAssertEqual(right.frame.midX, 140, accuracy: 0.5, "右＝微信小号")
+    /// 但往内拖够远仍然是恢复完整人物 —— 两条路不能互相吃掉
+    func testInwardDragStillRestores() {
+        XCTAssertTrue(FloatingCharacterDockLayout.shouldRestore(horizontalDrag: 60, from: .left))
+        XCTAssertFalse(FloatingCharacterDockLayout.shouldHide(horizontalDrag: 60, from: .left))
     }
+
+    private var bigScreen: NSRect { NSRect(x: 0, y: 0, width: 1_512, height: 982) }
 }

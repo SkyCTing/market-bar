@@ -660,3 +660,88 @@ final class ReminderStoreRobustnessTests: XCTestCase {
         XCTAssertTrue(store.reminders.isEmpty)
     }
 }
+
+// MARK: - 「每 N 天」的搜索窗口要跟着 N 走
+
+final class ReminderLargeIntervalTests: XCTestCase {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func everyDays(_ interval: Int) -> Reminder {
+        var reminder = Reminder(title: "t", body: "b", hour: 9, minute: 0, repeatRule: .everyDays(interval: interval))
+        reminder.anchorDay = "2026-09-25"
+        return reminder
+    }
+
+    /// ⚠️ 回归：搜索窗口原来固定 370 天，N > 370 时永远找不到下一次，
+    /// 那条提醒就成了菜单上看着正常、却永远不响的死条
+    func testLargeIntervalStillSchedules() {
+        for interval in [371, 400, 1_000] {
+            XCTAssertNotNil(
+                ReminderScheduler.nextFireDate(after: start, reminder: everyDays(interval)),
+                "每 \(interval) 天算不出下一次"
+            )
+        }
+    }
+
+    func testLargeIntervalLandsOnTheRightDay() {
+        // 锚点 2026-09-25，每 400 天 → 下一次应该在 400 天后（按北京时间的日历日算）
+        let reminder = everyDays(400)
+        let anchor = TradingSession.calendar.date(from: DateComponents(year: 2026, month: 9, day: 25, hour: 10))!
+
+        let next = ReminderScheduler.nextFireDate(after: anchor, reminder: reminder)
+
+        XCTAssertNotNil(next)
+        let days = ReminderScheduler.daysBetween("2026-09-25", and: next!, calendar: TradingSession.calendar)
+        XCTAssertEqual(days, 400)
+    }
+
+    func testOrdinaryIntervalsAreUnaffected() {
+        XCTAssertNotNil(ReminderScheduler.nextFireDate(after: start, reminder: everyDays(1)))
+        XCTAssertNotNil(ReminderScheduler.nextFireDate(after: start, reminder: everyDays(30)))
+    }
+}
+
+// MARK: - 未读读不到 vs 没有未读
+
+final class UnreadStateTests: XCTestCase {
+    func testDisplaysFetchedWhenSomethingWasRead() {
+        let fetched = UnreadBadge.Counts(weChat: .count(3), weChatSecond: .none)
+
+        let displayed = UnreadBadge.displayed(fetched, previous: UnreadBadge.Counts(), failures: 0, tolerance: 3)
+
+        XCTAssertEqual(displayed, fetched)
+    }
+
+    /// 一次瞬时失败不该让红数字闪成灰圈：先沿用上一次的显示
+    func testKeepsPreviousOnTransientFailure() {
+        let previous = UnreadBadge.Counts(weChat: .count(6), weChatSecond: .none)
+
+        let displayed = UnreadBadge.displayed(
+            UnreadBadge.Counts(), previous: previous, failures: 1, tolerance: 3
+        )
+
+        XCTAssertEqual(displayed, previous)
+    }
+
+    /// 连续失败够多次就认账，显示成「读不到」—— 权限被吊销时用户能看出来
+    func testAcceptsFailureAfterTolerance() {
+        let previous = UnreadBadge.Counts(weChat: .count(6), weChatSecond: .none)
+
+        let displayed = UnreadBadge.displayed(
+            UnreadBadge.Counts(), previous: previous, failures: 3, tolerance: 3
+        )
+
+        XCTAssertTrue(displayed.isUnavailable)
+    }
+
+    /// 只有一侧读不到不算整体失败：另一侧的更新照常应用
+    func testPartialFailureIsNotTreatedAsOverallFailure() {
+        let fetched = UnreadBadge.Counts(weChat: .unavailable, weChatSecond: .count(2))
+
+        XCTAssertFalse(fetched.isUnavailable)
+        XCTAssertEqual(
+            UnreadBadge.displayed(fetched, previous: UnreadBadge.Counts(), failures: 9, tolerance: 3),
+            fetched
+        )
+    }
+}

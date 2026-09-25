@@ -21,7 +21,12 @@ final class ReminderCenter {
     private let store: ReminderStore
     private let characterController: FloatingCharacterController
     private var timer: Timer?
-    private var pendingConfirm: Timer?
+    /// 每条提醒各自的「气泡 → 弹窗」待确认定时器。
+    /// 原来只有一格，任何一条提醒 fire() 都会把别人那格顶掉 —— 于是先响的那条
+    /// 弹窗永远不来，用户毫不知情。改成按 id 各存一份。
+    private var pendingConfirms: [UUID: Timer] = [:]
+    /// 「10 分钟后再提醒」的顺延定时器，留着是为了能取消
+    private var snoozeTimers: [UUID: Timer] = [:]
     /// 有倒计时在跑时才存在：每秒刷一下头顶那行
     private var countdownTicker: Timer?
     private var snoozeCounts: [UUID: Int] = [:]
@@ -38,7 +43,17 @@ final class ReminderCenter {
 
     /// 配置变化后重新排程（菜单里增删改之后调用）
     func reload() {
+        // 提醒被删了/清空了，还在等确认、等顺延的就都别响了 —— 否则会出现
+        // 「已经删掉的提醒照样弹窗」的幽灵提醒
+        cancelAllPending()
         scheduleNext()
+    }
+
+    private func cancelAllPending() {
+        for timer in pendingConfirms.values { timer.invalidate() }
+        pendingConfirms.removeAll()
+        for timer in snoozeTimers.values { timer.invalidate() }
+        snoozeTimers.removeAll()
     }
 
     private var holidays: [String: String] {
@@ -149,10 +164,10 @@ final class ReminderCenter {
         // 兜底：正常存不出「两个都不勾」，但存档里的脏数据不该变成「静默不提醒」
         let methods = reminder.methods.isEmpty ? Reminder.Methods.bubble : reminder.methods
 
-        pendingConfirm?.invalidate()
-        pendingConfirm = nil
-
-        if methods.contains(.bubble) {
+        // 人物被收起来时「宠物提示」整个不响：气泡看不见，只剩一声「叮」更让人困惑。
+        // 用户明确要求开会时完全隐藏就别有任何提示，所以连声音也一起省掉。
+        // 只勾了弹窗的不受影响 —— 那是另一条独立选择的通道
+        if methods.contains(.bubble), characterController.isVisible {
             NSSound(named: "Sosumi")?.play()
             characterController.say(reminder.body.isEmpty ? reminder.title : reminder.body)
         }
@@ -165,16 +180,26 @@ final class ReminderCenter {
             return
         }
 
-        // 两个都勾：先给 60 秒让气泡说完，没人理再弹
-        pendingConfirm = Timer.scheduledTimer(withTimeInterval: acknowledgeWindow, repeats: false) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.presentModal(reminder) }
+        // 两个都勾：先给一段时间让气泡说完，没人理再弹。
+        // 只顶掉**这一条**自己的待确认，不碰别人的
+        armPendingConfirm(for: reminder)
+    }
+
+    private func armPendingConfirm(for reminder: Reminder) {
+        pendingConfirms[reminder.id]?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: acknowledgeWindow, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pendingConfirms[reminder.id] = nil
+                self.presentModal(reminder)
+            }
         }
-        if let pendingConfirm { RunLoop.main.add(pendingConfirm, forMode: .common) }
+        RunLoop.main.add(timer, forMode: .common)
+        pendingConfirms[reminder.id] = timer
     }
 
     func acknowledge() {
-        pendingConfirm?.invalidate()
-        pendingConfirm = nil
+        cancelAllPending()
     }
 
     /// 置顶模态框。注意 runModal 会阻塞主线程一整轮（这期间金价刷新暂停），
@@ -197,9 +222,17 @@ final class ReminderCenter {
                 snoozeCounts[reminder.id] = 0
                 return
             }
-            Timer.scheduledTimer(withTimeInterval: Self.snoozeInterval, repeats: false) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.fire(reminder) }
+            let timer = Timer.scheduledTimer(withTimeInterval: Self.snoozeInterval, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.snoozeTimers[reminder.id] = nil
+                    // 顺延期间这条提醒被删掉/清空了就别再响
+                    guard self.store.reminders.contains(where: { $0.id == reminder.id }) else { return }
+                    self.fire(reminder)
+                }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            snoozeTimers[reminder.id] = timer
         } else {
             snoozeCounts[reminder.id] = 0
         }

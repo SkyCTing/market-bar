@@ -619,11 +619,14 @@ final class WatchlistSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
 /// 持有配置窗口（懒创建），把「保存」的结果转给 AppDelegate。
 @MainActor
 final class WatchlistSettingsController {
-    /// 参数是校验通过的新配置
-    var onSave: ((WatchlistConfig) -> Void)?
+    /// 参数是校验通过的新配置；返回 false 表示没保存成功（窗口就不关，改动还在）
+    var onSave: ((WatchlistConfig) -> Bool)?
 
     private var window: WatchlistSettingsWindow?
     private var view: WatchlistSettingsView?
+    /// 打开窗口那一刻磁盘上的内容。保存前拿它和磁盘现状比对，
+    /// 期间被外部改过就先问一句，别把人家的改动闷头覆盖掉
+    private var baseline: WatchlistConfig?
 
     var isVisible: Bool { window?.isVisible ?? false }
 
@@ -644,7 +647,9 @@ final class WatchlistSettingsController {
 
         // 每次打开都按磁盘上的最新内容重铺；窗口已经开着就别动，免得把正在编的内容冲掉
         if !window.isVisible {
-            view.reload(config: WatchlistConfig.load())
+            let config = WatchlistConfig.load()
+            view.reload(config: config)
+            baseline = config
             window.center()
         }
 
@@ -663,13 +668,30 @@ final class WatchlistSettingsController {
 
     private func makeView() -> WatchlistSettingsView {
         let view = WatchlistSettingsView(draft: WatchlistDraft(config: WatchlistConfig.load()))
-        view.onSave = { [weak self] config in
-            self?.onSave?(config)
-            self?.close()
-        }
+        view.onSave = { [weak self] config in self?.handleSave(config) ?? false }
         view.onCancel = { [weak self] in self?.close() }
         self.view = view
         return view
+    }
+
+    /// 返回是否真的存下去了；存成功才关窗
+    private func handleSave(_ config: WatchlistConfig) -> Bool {
+        if let baseline, WatchlistConfig.load() != baseline {
+            guard confirmOverwrite() else { return false }
+        }
+        guard onSave?(config) == true else { return false }
+        close()
+        return true
+    }
+
+    /// 窗口开着的时候配置文件被外部（编辑器 / 另一份 app）改过
+    private func confirmOverwrite() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "配置文件在窗口打开期间被改过"
+        alert.informativeText = "继续保存会覆盖掉外面的改动。要放弃你的修改，请点「取消」再重新打开窗口。"
+        alert.addButton(withTitle: "仍然覆盖")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func makeWindow(contentView: NSView) -> WatchlistSettingsWindow {
