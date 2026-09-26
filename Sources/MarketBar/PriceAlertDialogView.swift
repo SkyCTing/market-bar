@@ -20,6 +20,10 @@ final class PriceAlertDialogView: NSView {
     private let targetPopup = NSPopUpButton()
     private let directionPopup = NSPopUpButton()
     private let thresholdField = NSTextField()
+    /// 只有「N 分钟内涨跌」才用得上：分钟数
+    private let minutesField = NSTextField()
+    private let minutesLabel = NSTextField(labelWithString: "分钟")
+    private let thresholdLabel = NSTextField(labelWithString: "阈值")
     private let messageField = NSTextField()
     private let repeatsCheckbox = NSButton(
         checkboxWithTitle: "重复提醒（价格回落后再次穿过会再响一次）",
@@ -68,16 +72,32 @@ final class PriceAlertDialogView: NSView {
 
         rowLabel("方向", y: 132)
         directionPopup.frame = NSRect(x: 64, y: 130, width: 90, height: 25)
-        directionPopup.addItems(withTitles: [PriceAlert.Direction.above.title, PriceAlert.Direction.below.title])
+        directionPopup.addItems(withTitles: [
+            PriceAlert.Direction.above.title,
+            PriceAlert.Direction.below.title,
+            "N 分钟内涨跌",
+        ])
+        directionPopup.target = self
+        directionPopup.action = #selector(directionChanged)
         addSubview(directionPopup)
 
-        let thresholdLabel = NSTextField(labelWithString: "阈值")
         thresholdLabel.frame = NSRect(x: 164, y: 135, width: 32, height: 18)
         thresholdLabel.alignment = .right
         addSubview(thresholdLabel)
-        thresholdField.frame = NSRect(x: 202, y: 130, width: 122, height: 24)
+        thresholdField.frame = NSRect(x: 202, y: 130, width: 90, height: 24)
         thresholdField.placeholderString = "例如 45.00"
         addSubview(thresholdField)
+
+        // 「N 分钟内涨跌」才出现：阈值那一格这时是「涨跌幅 %」
+        minutesLabel.frame = NSRect(x: 296, y: 135, width: 32, height: 18)
+        minutesLabel.alignment = .right
+        addSubview(minutesLabel)
+        minutesField.frame = NSRect(x: 332, y: 130, width: 44, height: 24)
+        minutesField.placeholderString = "5"
+        minutesField.stringValue = "5"
+        addSubview(minutesField)
+
+        updateVisibility()
 
         rowLabel("提示语", y: 96)
         messageField.frame = NSRect(x: 64, y: 94, width: 308, height: 24)
@@ -97,11 +117,33 @@ final class PriceAlertDialogView: NSView {
         }
     }
 
+    @objc private func directionChanged() {
+        updateVisibility()
+    }
+
+    /// 「N 分钟内涨跌」时才显示分钟数；此时「阈值」那格的含义变成涨跌幅
+    private func updateVisibility() {
+        let isMovement = directionPopup.indexOfSelectedItem == 2
+        minutesLabel.isHidden = !isMovement
+        minutesField.isHidden = !isMovement
+        thresholdLabel.stringValue = isMovement ? "涨跌幅" : "阈值"
+        thresholdField.placeholderString = isMovement ? "例如 2（%）" : "例如 45.00"
+    }
+
     private func apply(_ alert: PriceAlert?) {
         let target = alert?.target ?? .gold
         targetPopup.selectItem(at: options.firstIndex { $0.target == target } ?? 0)
-        directionPopup.selectItem(at: alert?.direction == .below ? 1 : 0)
+        switch alert?.direction {
+        case .below:
+            directionPopup.selectItem(at: 1)
+        case .movesWithin(_, let minutes):
+            directionPopup.selectItem(at: 2)
+            minutesField.stringValue = "\(max(1, minutes))"
+        default:
+            directionPopup.selectItem(at: 0)
+        }
         if let threshold = alert?.threshold, threshold > 0 {
+            // 涨跌那条的 threshold 存的是百分比，两位小数够用
             thresholdField.stringValue = String(format: "%.2f", threshold)
         }
         messageField.stringValue = alert?.message ?? ""
@@ -110,14 +152,32 @@ final class PriceAlertDialogView: NSView {
         let methods = alert?.methods ?? .default
         bubbleCheckbox.state = methods.contains(.bubble) ? .on : .off
         alertCheckbox.state = methods.contains(.alert) ? .on : .off
+
+        // ⚠️ 回填之后必须重算一次可见性：编辑一条「N 分钟内涨跌」时，
+        // 分钟格和「涨跌幅」这个标签得跟着出来
+        updateVisibility()
     }
 
     /// 阈值非法时返回 nil（调用方 beep）
     func makeAlert(basedOn alert: PriceAlert?) -> PriceAlert? {
         let threshold = Double(thresholdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let threshold, threshold > 0, threshold.isFinite else { return nil }
+        // 涨跌幅超过 100% 基本是打错了（真出现也是先触发再回落）
+        if directionPopup.indexOfSelectedItem == 2, threshold > 100 { return nil }
 
-        let direction: PriceAlert.Direction = directionPopup.indexOfSelectedItem == 1 ? .below : .above
+        let direction: PriceAlert.Direction
+        switch directionPopup.indexOfSelectedItem {
+        case 1:
+            direction = .below
+        case 2:
+            // 这时 thresholdField 填的是「涨跌幅 %」，minutesField 是窗口
+            guard let minutes = Int(minutesField.stringValue.trimmingCharacters(in: .whitespaces)), minutes > 0 else {
+                return nil
+            }
+            direction = .movesWithin(percent: threshold, minutes: minutes)
+        default:
+            direction = .above
+        }
         let target = options.indices.contains(targetPopup.indexOfSelectedItem)
             ? options[targetPopup.indexOfSelectedItem].target
             : .gold

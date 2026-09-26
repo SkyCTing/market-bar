@@ -595,6 +595,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 价格提醒：金价与股票共用一套（模型与判定见 PriceAlert.swift），存 UserDefaults
     private let priceAlertStore = PriceAlertStore()
+    /// 各标的最近的报价，用来算「N 分钟内涨跌」。金价用 `goldHistoryKey`
+    private var priceHistory: [String: [(date: Date, price: Double)]] = [:]
+    private static let goldHistoryKey = "__gold__"
+    /// 采样间隔：1 秒一刷也没必要每秒都存，5 秒一个点足够算涨跌幅
+    private static let priceSampleInterval: TimeInterval = 5
     private var isMenuOpen = false
     private var isFloatingCharacterVisible = true
     private var floatingCharacterSize: FloatingCharacterSizeOption = .defaultOption
@@ -739,6 +744,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateFloatingCharacter()
         currentMarketData = await marketTask
         currentStockQuotes = await stockTask
+
+        // 先把这一轮的价格记进历史，再判定 —— 判定要用「N 分钟前」的点
+        recordPriceSamples()
 
         // 金价和股票行情都拿到之后再判一次。单一判定点，代价是金价提醒要等到
         // 三个请求里最慢那个回来（各自 5 秒超时）—— 对价格提醒来说无所谓
@@ -1323,6 +1331,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Price Alert
 
+    /// 记一笔报价。窗口按当前配置里最长的那条算，没配就留 5 分钟
+    private func recordPriceSamples(now: Date = Date()) {
+        let window = priceAlertStore.alerts
+            .compactMap { alert -> Int? in
+                if case .movesWithin(_, let minutes) = alert.direction { return minutes }
+                return nil
+            }
+            .max()
+            .map { TimeInterval(min($0, 120) * 60) } ?? 300
+        let cutoff = now.addingTimeInterval(-window)
+
+        func append(_ key: String, _ price: Double) {
+            var samples = priceHistory[key] ?? []
+            samples.removeAll { $0.date < cutoff }
+            // 抽稀：离上一个点不到 5 秒就跳过
+            if let last = samples.last, now.timeIntervalSince(last.date) < Self.priceSampleInterval {
+                priceHistory[key] = samples
+                return
+            }
+            samples.append((now, price))
+            priceHistory[key] = samples
+        }
+
+        for (code, quote) in currentStockQuotes {
+            guard let price = quote.numericPrice else { continue }
+            append(code, price)
+        }
+        if currentPrice > 0 { append(Self.goldHistoryKey, currentPrice) }
+    }
+
+    /// N 分钟前的价格。
+    ///
+    /// 历史不够长时返回 nil（刚启动、刚加进自选）—— **宁可这轮不判**，
+    /// 也别拿一个更近的价格冒充「N 分钟前」，那会算出偏小的涨跌幅、静默漏报
+    private func referencePrice(for target: PriceAlert.Target, minutes: Int, now: Date) -> Double? {
+        let key = target.code ?? Self.goldHistoryKey
+        guard let samples = priceHistory[key], let oldest = samples.first else { return nil }
+
+        let wanted = now.addingTimeInterval(-Double(minutes) * 60)
+        guard oldest.date <= wanted else { return nil }
+
+        // 取最接近 wanted 的那个点
+        return samples.min {
+            abs($0.date.timeIntervalSince(wanted)) < abs($1.date.timeIntervalSince(wanted))
+        }?.price
+    }
+
     private func checkPriceAlerts() {
         guard !priceAlertStore.alerts.isEmpty else { return }
 
@@ -1330,7 +1385,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 这只标的这轮没行情（停牌、接口没返回）就跳过，别拿旧价格去判
             guard let targetPrice = currentPrice(for: alert.target) else { continue }
 
-            let outcome = PriceAlertEvaluator.evaluate(alert, price: targetPrice)
+            var reference: Double?
+            if case .movesWithin(_, let minutes) = alert.direction {
+                reference = referencePrice(for: alert.target, minutes: minutes, now: Date())
+            }
+            let outcome = PriceAlertEvaluator.evaluate(alert, price: targetPrice, referencePrice: reference)
             // 闩锁变了就落盘：不落盘的话「不重复」的提醒重启后会再响一次
             if outcome.updated != alert {
                 priceAlertStore.upsert(outcome.updated)

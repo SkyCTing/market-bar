@@ -100,6 +100,97 @@ final class PriceAlertEvaluatorTests: XCTestCase {
         XCTAssertTrue(fired)
     }
 
+    // MARK: N 分钟内涨跌
+
+    private func movement(percent: Double = 2, minutes: Int = 5, repeats: Bool = true, triggered: Bool = false) -> PriceAlert {
+        PriceAlert(
+            target: .stock(code: "sh600036"),
+            direction: .movesWithin(percent: percent, minutes: minutes),
+            threshold: percent,
+            repeats: repeats,
+            isTriggered: triggered
+        )
+    }
+
+    /// 涨超阈值要响
+    func testFiresWhenRisingBeyondThreshold() {
+        let (fired, updated) = PriceAlertEvaluator.evaluate(movement(), price: 102, referencePrice: 100)
+
+        XCTAssertTrue(fired)
+        XCTAssertTrue(updated.isTriggered)
+    }
+
+    /// **跌**超阈值一样要响 —— 用户要的是「涨跌」，不是只盯涨
+    func testFiresWhenFallingBeyondThreshold() {
+        let (fired, _) = PriceAlertEvaluator.evaluate(movement(), price: 97.9, referencePrice: 100)
+
+        XCTAssertTrue(fired)
+    }
+
+    func testDoesNotFireInsideTheThreshold() {
+        let (fired, updated) = PriceAlertEvaluator.evaluate(movement(), price: 101, referencePrice: 100)
+
+        XCTAssertFalse(fired)
+        XCTAssertFalse(updated.isTriggered)
+    }
+
+    /// ⚠️ 没有参考价（刚启动、刚加进自选）时**什么都不做**：
+    /// 不响，也不动闩锁 —— 拿一个更近的价格冒充「N 分钟前」会静默漏报
+    func testWithoutReferencePriceNothingHappens() {
+        let (fired, updated) = PriceAlertEvaluator.evaluate(movement(triggered: true), price: 200, referencePrice: nil)
+
+        XCTAssertFalse(fired)
+        XCTAssertTrue(updated.isTriggered, "闩锁也不该被改动")
+    }
+
+    func testMovementRearmsAfterCalmingDown() {
+        var current = movement()
+        (_, current) = PriceAlertEvaluator.evaluate(current, price: 103, referencePrice: 100)
+        XCTAssertTrue(current.isTriggered)
+
+        (_, current) = PriceAlertEvaluator.evaluate(current, price: 100.5, referencePrice: 100)
+        XCTAssertFalse(current.isTriggered, "波动回到阈值内就该重新武装")
+    }
+
+    func testMovementHonoursRepeatFlag() {
+        var current = movement(repeats: false)
+        (_, current) = PriceAlertEvaluator.evaluate(current, price: 103, referencePrice: 100)
+        (_, current) = PriceAlertEvaluator.evaluate(current, price: 100.5, referencePrice: 100)
+
+        XCTAssertTrue(current.isTriggered, "没勾重复提醒就一直锁着")
+    }
+
+    func testMovementRatioHelper() {
+        XCTAssertEqual(PriceAlert.Direction.movement(price: 102, reference: 100)!, 0.02, accuracy: 1e-9)
+        XCTAssertEqual(PriceAlert.Direction.movement(price: 98, reference: 100)!, -0.02, accuracy: 1e-9)
+        XCTAssertNil(PriceAlert.Direction.movement(price: 100, reference: 0))
+        XCTAssertNil(PriceAlert.Direction.movement(price: .nan, reference: 100))
+    }
+
+    func testMovementSummaryAndMessage() {
+        let alert = movement(percent: 2, minutes: 5)
+
+        XCTAssertEqual(alert.summary(displayName: "招商银行"), "⚡️ 招商银行 5 分钟内涨跌 ±2.00%")
+        XCTAssertEqual(alert.displayMessage(price: 102.5), "sh600036: 102.50（5 分钟内涨跌超过 2.00%）")
+    }
+
+    /// 新方向要能存能读；老数据（"above"/"below" 两个裸字符串）也必须还认
+    func testDirectionCodableIsBackwardCompatible() throws {
+        for direction in [PriceAlert.Direction.above, .below, .movesWithin(percent: 2.5, minutes: 15)] {
+            var alert = PriceAlert()
+            alert.direction = direction
+
+            let data = try JSONEncoder().encode(alert)
+            XCTAssertEqual(try JSONDecoder().decode(PriceAlert.self, from: data).direction, direction)
+        }
+
+        let legacy = #"{"id":"11111111-2222-3333-4444-555555555555","target":"gold","direction":"below","threshold":880}"#
+        XCTAssertEqual(
+            try JSONDecoder().decode(PriceAlert.self, from: Data(legacy.utf8)).direction,
+            .below
+        )
+    }
+
     // MARK: 默认提示语
 
     func testDefaultMessageForStockIsCodeColonPrice() {
