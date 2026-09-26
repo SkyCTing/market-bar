@@ -4,12 +4,14 @@ import XCTest
 @testable import MarketBar
 
 final class KeyComboTests: XCTestCase {
-    private func event(keyCode: UInt16, flags: NSEvent.ModifierFlags, key: String = "m") -> NSEvent {
+    private func event(
+        keyCode: UInt16, flags: NSEvent.ModifierFlags, key: String = "m", repeats: Bool = false
+    ) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
             windowNumber: 0, context: nil,
             characters: key, charactersIgnoringModifiers: key,
-            isARepeat: false, keyCode: keyCode
+            isARepeat: repeats, keyCode: keyCode
         )!
     }
 
@@ -44,6 +46,8 @@ final class KeyComboTests: XCTestCase {
         XCTAssertFalse(combo.matches(event(keyCode: 35, flags: [.option, .command])), "键不同")
         XCTAssertFalse(combo.matches(event(keyCode: 46, flags: [.option])), "修饰键不同")
         XCTAssertFalse(combo.matches(event(keyCode: 46, flags: [.command])), "修饰键不同")
+        XCTAssertFalse(combo.matches(event(keyCode: 46, flags: [.option, .command], repeats: true)),
+                       "按住热键不应反复显隐")
     }
 
     func testDisplayText() {
@@ -76,5 +80,36 @@ final class KeyComboTests: XCTestCase {
         XCTAssertFalse(KeyCombo.defaultPanel.matches(
             event(keyCode: KeyCombo.defaultCharacter.keyCode, flags: [.option, .command])
         ))
+    }
+
+    func testClearingShortcutStaysClearedAfterReload() throws {
+        let suite = "HotKeyPreferenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        XCTAssertEqual(HotKeyPreferences.load(from: defaults, key: "panel", fallback: .defaultPanel), .defaultPanel)
+        defaults.set(try JSONEncoder().encode(nil as KeyCombo?), forKey: "panel")
+        XCTAssertNil(HotKeyPreferences.load(from: defaults, key: "panel", fallback: .defaultPanel))
+    }
+
+    func testTwoActionsCannotUseSameKeysEvenWithDifferentDisplayCase() {
+        let panel = KeyCombo.defaultPanel
+        let duplicate = KeyCombo(keyCode: panel.keyCode, modifiers: panel.modifiers, key: "M")
+        XCTAssertTrue(HotKeyPreferences.conflicts(panel: panel, character: duplicate))
+        XCTAssertFalse(HotKeyPreferences.conflicts(panel: panel, character: .defaultCharacter))
+        XCTAssertFalse(HotKeyPreferences.conflicts(panel: nil, character: panel))
+    }
+
+    @MainActor
+    func testSettingsNotifiesWhenEitherShortcutIsCleared() {
+        let form = HotKeySettingsView(panel: .defaultPanel, character: .defaultCharacter)
+        var changes = 0
+        form.onChange = { changes += 1 }
+        let clearButtons = form.subviews.compactMap { $0 as? NSButton }.filter { $0.title == "清除" }
+        XCTAssertEqual(clearButtons.count, 2)
+        for button in clearButtons { button.performClick(nil) }
+        XCTAssertEqual(changes, 2)
+        XCTAssertNil(form.panelCombo)
+        XCTAssertNil(form.characterCombo)
     }
 }

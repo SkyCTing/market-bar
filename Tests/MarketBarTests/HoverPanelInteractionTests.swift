@@ -16,6 +16,12 @@ final class HoverPanelInteractionTests: XCTestCase {
         ))
     }
 
+    func testPinnedHotKeyPanelStaysOpenAfterCursorLeaves() {
+        XCTAssertFalse(HoverPanelInteraction.shouldDismiss(pinned: true, overButton: false, overPanel: false))
+        XCTAssertTrue(HoverPanelInteraction.shouldDismiss(pinned: false, overButton: false, overPanel: false))
+        XCTAssertFalse(HoverPanelInteraction.shouldDismiss(pinned: false, overButton: false, overPanel: true))
+    }
+
     func testOutsideButtonAndPanelStillDismisses() {
         XCTAssertFalse(HoverPanelInteraction.contains(
             NSPoint(x: 300, y: 798), button: button, panel: panel

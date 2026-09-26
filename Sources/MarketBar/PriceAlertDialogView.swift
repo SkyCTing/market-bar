@@ -171,7 +171,8 @@ final class PriceAlertDialogView: NSView {
             direction = .below
         case 2:
             // 这时 thresholdField 填的是「涨跌幅 %」，minutesField 是窗口
-            guard let minutes = Int(minutesField.stringValue.trimmingCharacters(in: .whitespaces)), minutes > 0 else {
+            guard let minutes = Int(minutesField.stringValue.trimmingCharacters(in: .whitespaces)),
+                  (1...120).contains(minutes) else {
                 return nil
             }
             direction = .movesWithin(percent: threshold, minutes: minutes)

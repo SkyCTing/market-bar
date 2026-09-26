@@ -39,6 +39,10 @@ enum StockGrouping {
 
         return buckets.filter { !$0.rows.isEmpty }
     }
+
+    static func displayRows(_ rows: [StockRow]) -> [StockRow] {
+        groups(rows).flatMap(\.rows)
+    }
 }
 
 /// 一个币种的持仓汇总。**不同币种绝不相加** —— 沿用面板既有的口径。

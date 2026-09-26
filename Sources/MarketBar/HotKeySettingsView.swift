@@ -4,8 +4,12 @@ import AppKit
 @MainActor
 final class KeyComboRecorderView: NSView {
     var combo: KeyCombo? {
-        didSet { refresh() }
+        didSet {
+            refresh()
+            onChange?()
+        }
     }
+    var onChange: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
     private var isRecording = false
@@ -78,12 +82,15 @@ final class KeyComboRecorderView: NSView {
 final class HotKeySettingsView: NSView {
     private let panelRecorder = KeyComboRecorderView()
     private let characterRecorder = KeyComboRecorderView()
+    var onChange: (() -> Void)?
 
     init(panel: KeyCombo?, character: KeyCombo?) {
         super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 122))
         panelRecorder.combo = panel
         characterRecorder.combo = character
         buildLayout()
+        panelRecorder.onChange = { [weak self] in self?.onChange?() }
+        characterRecorder.onChange = { [weak self] in self?.onChange?() }
     }
 
     @available(*, unavailable)

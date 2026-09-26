@@ -596,7 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 价格提醒：金价与股票共用一套（模型与判定见 PriceAlert.swift），存 UserDefaults
     private let priceAlertStore = PriceAlertStore()
     /// 各标的最近的报价，用来算「N 分钟内涨跌」。金价用 `goldHistoryKey`
-    private var priceHistory: [String: [(date: Date, price: Double)]] = [:]
+    private var priceHistory = PriceHistory()
     private static let goldHistoryKey = "__gold__"
     /// 采样间隔：1 秒一刷也没必要每秒都存，5 秒一个点足够算涨跌幅
     private static let priceSampleInterval: TimeInterval = 5
@@ -607,6 +607,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var panelHotKey: KeyCombo? = KeyCombo.defaultPanel
     private var characterHotKey: KeyCombo? = KeyCombo.defaultCharacter
     private let hotKeyCenter = HotKeyCenter()
+    private var isHoverPanelPinned = false
     /// 问 AI 时把持仓（股数/成本/浮动盈亏）也放进快照。**默认关** ——
     /// 这是本机数据，发不发由用户决定
     private var snapshotIncludesHoldings = false
@@ -696,6 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         isMenuOpen = true
+        isHoverPanelPinned = false
         hoverPanel?.dismiss()
     }
 
@@ -1075,6 +1077,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         StockWatchlist.reload()
         StockHoldings.reload()
         currentStockQuotes = [:]
+        priceHistory.retain(keys: [Self.goldHistoryKey])
         dailyBars = [:]
         dailyBarsSessionKey = ""
         if hoverPanel?.isVisible == true { updateHoverPanelContent() }
@@ -1333,32 +1336,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 记一笔报价。窗口按当前配置里最长的那条算，没配就留 5 分钟
     private func recordPriceSamples(now: Date = Date()) {
-        let window = priceAlertStore.alerts
+        let minutes = priceAlertStore.alerts
             .compactMap { alert -> Int? in
                 if case .movesWithin(_, let minutes) = alert.direction { return minutes }
                 return nil
             }
-            .max()
-            .map { TimeInterval(min($0, 120) * 60) } ?? 300
-        let cutoff = now.addingTimeInterval(-window)
-
-        func append(_ key: String, _ price: Double) {
-            var samples = priceHistory[key] ?? []
-            samples.removeAll { $0.date < cutoff }
-            // 抽稀：离上一个点不到 5 秒就跳过
-            if let last = samples.last, now.timeIntervalSince(last.date) < Self.priceSampleInterval {
-                priceHistory[key] = samples
-                return
-            }
-            samples.append((now, price))
-            priceHistory[key] = samples
-        }
+            .max() ?? 5
+        let window = TimeInterval(min(minutes, 120) * 60)
 
         for (code, quote) in currentStockQuotes {
-            guard let price = quote.numericPrice else { continue }
-            append(code, price)
+            guard let price = quote.numericPrice,
+                  QuoteFreshness.evaluate(quote, at: now, holidays: holidays) == .current else { continue }
+            priceHistory.record(price: price, for: code, at: now, window: window,
+                                sampleInterval: Self.priceSampleInterval)
         }
-        if currentPrice > 0 { append(Self.goldHistoryKey, currentPrice) }
+        if currentPrice > 0 {
+            priceHistory.record(price: currentPrice, for: Self.goldHistoryKey, at: now,
+                                window: window, sampleInterval: Self.priceSampleInterval)
+        }
     }
 
     /// N 分钟前的价格。
@@ -1367,15 +1362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 也别拿一个更近的价格冒充「N 分钟前」，那会算出偏小的涨跌幅、静默漏报
     private func referencePrice(for target: PriceAlert.Target, minutes: Int, now: Date) -> Double? {
         let key = target.code ?? Self.goldHistoryKey
-        guard let samples = priceHistory[key], let oldest = samples.first else { return nil }
-
-        let wanted = now.addingTimeInterval(-Double(minutes) * 60)
-        guard oldest.date <= wanted else { return nil }
-
-        // 取最接近 wanted 的那个点
-        return samples.min {
-            abs($0.date.timeIntervalSince(wanted)) < abs($1.date.timeIntervalSince(wanted))
-        }?.price
+        return priceHistory.referencePrice(for: key, minutes: minutes, at: now)
     }
 
     private func checkPriceAlerts() {
@@ -1387,6 +1374,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             var reference: Double?
             if case .movesWithin(_, let minutes) = alert.direction {
+                if case .stock(let code) = alert.target {
+                    guard let quote = currentStockQuotes[code],
+                          QuoteFreshness.evaluate(quote, at: Date(), holidays: holidays) == .current
+                    else { continue }
+                }
                 reference = referencePrice(for: alert.target, minutes: minutes, now: Date())
             }
             let outcome = PriceAlertEvaluator.evaluate(alert, price: targetPrice, referencePrice: reference)
@@ -1535,11 +1527,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 快捷键呼出/收起面板。位置和鼠标悬停时用的是同一个（状态项的 frame）
     @objc private func toggleHoverPanel() {
         if hoverPanel?.isVisible == true {
+            isHoverPanelPinned = false
             hoverPanel?.dismiss()
             return
         }
         guard let button = statusItem.button, let window = button.window else { return }
         showHoverPanel(below: window.convertToScreen(button.convert(button.bounds, to: nil)))
+        isHoverPanelPinned = true
     }
 
     /// 把当前配置装到监视器上。配置改了重新调一次即可
@@ -1560,16 +1554,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let dialog = NSAlert()
         dialog.messageText = "快捷键"
-        dialog.informativeText = "两项都可以留空（留空 = 不设快捷键）"
+        let normalHint = "两项都可以留空（留空 = 不设快捷键）"
+        dialog.informativeText = normalHint
         dialog.addButton(withTitle: "保存")
         dialog.addButton(withTitle: "取消")
+        form.onChange = { [weak dialog, weak form] in
+            guard let dialog, let form else { return }
+            let conflict = HotKeyPreferences.conflicts(panel: form.panelCombo, character: form.characterCombo)
+            dialog.buttons.first?.isEnabled = !conflict
+            dialog.informativeText = conflict ? "两项快捷键不能相同，请修改其中一项" : normalHint
+        }
+        form.onChange?()
         dialog.accessoryView = form
         dialog.window.initialFirstResponder = form.firstResponderControl
 
+        hotKeyCenter.stop()
+        defer { applyHotKeys() }
         guard dialog.runModal() == .alertFirstButtonReturn else { return }
         panelHotKey = form.panelCombo
         characterHotKey = form.characterCombo
-        applyHotKeys()
         rebuildMenu()
         saveSettings()
     }
@@ -1581,8 +1584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func loadHotKey(forKey key: String, fallback: KeyCombo?) -> KeyCombo? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return fallback }
-        return (try? JSONDecoder().decode(KeyCombo?.self, from: data)) ?? fallback
+        HotKeyPreferences.load(from: .standard, key: key, fallback: fallback)
     }
 
     private func setupHoverTracking() {
@@ -1617,7 +1619,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if isOverButton && (hoverPanel == nil || !hoverPanel!.isVisible) {
             showHoverPanel(below: buttonRect)
-        } else if !isOverButton && !isOverPanel {
+        } else if HoverPanelInteraction.shouldDismiss(
+            pinned: isHoverPanelPinned, overButton: isOverButton, overPanel: isOverPanel
+        ) {
             hoverPanel?.dismiss()
         } else {
             hoverPanel?.updateHoveredQuote(at: mouseLocation)
@@ -1782,6 +1786,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 enum HoverPanelInteraction {
+    static func shouldDismiss(pinned: Bool, overButton: Bool, overPanel: Bool) -> Bool {
+        !pinned && !overButton && !overPanel
+    }
+
     static func contains(_ point: NSPoint, button: NSRect, panel: NSRect) -> Bool {
         if button.contains(point) || panel.contains(point) { return true }
         guard panel.maxY <= button.minY else { return false }
@@ -1847,6 +1855,7 @@ final class HoverPanel {
     private var stockCostLabels: [String: NSTextField] = [:]
     private var stockFloatingLabels: [String: NSTextField] = [:]
     private var stockProfitLabels: [String: NSTextField] = [:]
+    private var summaryLabels: [String: NSTextField] = [:]
 
     // 自选行是四列（名称+量能 | 股数 | 现价+涨跌幅 | 当日盈亏）。
     // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
@@ -2038,7 +2047,7 @@ final class HoverPanel {
         let showsGroupTitles = StockGrouping.groups(data.stocks).count > 1
         var currentGroupTitle: String?
 
-        for row in data.stocks {
+        for row in StockGrouping.displayRows(data.stocks) {
             let quote = row.quote
             let now = Date()
 
@@ -2249,8 +2258,10 @@ final class HoverPanel {
                 line.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
                 line.textColor = valueColor
                 line.lineBreakMode = .byTruncatingTail
+                line.toolTip = summary.lineText
                 line.translatesAutoresizingMaskIntoConstraints = false
                 container.addSubview(line)
+                summaryLabels[summary.currency] = line
                 constraints.append(contentsOf: [
                     line.topAnchor.constraint(equalTo: prev, constant: 5),
                     line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
@@ -2351,6 +2362,19 @@ final class HoverPanel {
     }
 
     func updateContent(data: HoverPanelData) {
+        if Set(summaryLabels.keys) != Set(data.summaries.map(\.currency)) {
+            let anchor = buttonRect
+            dismiss()
+            show(below: anchor, data: data)
+            return
+        }
+        for summary in data.summaries {
+            let text = summary.lineText
+            if summaryLabels[summary.currency]?.stringValue != text {
+                summaryLabels[summary.currency]?.stringValue = text
+                summaryLabels[summary.currency]?.toolTip = text
+            }
+        }
         displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
         displayedHolidays = data.holidays
         refreshHoveredQuote()
@@ -2438,6 +2462,7 @@ final class HoverPanel {
         stockCostLabels.removeAll()
         stockFloatingLabels.removeAll()
         stockProfitLabels.removeAll()
+        summaryLabels.removeAll()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             window.animator().alphaValue = 0

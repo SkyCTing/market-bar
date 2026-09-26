@@ -70,6 +70,13 @@ final class HoldingSummaryTests: XCTestCase {
         ])
 
         XCTAssertEqual(groups[0].rows.map(\.quote.code), ["sh600036", "sh512170"])
+        XCTAssertEqual(
+            StockGrouping.displayRows([
+                row("usAAPL", price: "200"), row("sh600036", price: "40"),
+                row("hk00700", price: "400"), row("sh512170", price: "1.2"),
+            ]).map(\.quote.code),
+            ["sh600036", "sh512170", "hk00700", "usAAPL"]
+        )
     }
 
     // MARK: 分币种汇总

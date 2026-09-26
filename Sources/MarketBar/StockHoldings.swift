@@ -77,7 +77,9 @@ enum StockProfitLoss {
     /// 非有限值返回 nil（与 `todayProfit` 的 guard 构成双重保险）。
     static func roundedYuan(_ value: Double) -> Int? {
         guard value.isFinite else { return nil }
-        return Int(value.rounded())
+        let rounded = value.rounded()
+        guard rounded < Double(Int.max), rounded >= Double(Int.min) else { return nil }
+        return Int(rounded)
     }
 }
 
@@ -124,8 +126,9 @@ enum HoldingFormat {
 
     /// 市值这类**不带正负号**的金额："1,284,000"。四舍五入到整数元
     static func amount(_ value: Double) -> String {
-        guard value.isFinite else { return "—" }
-        return grouped(String(Int(value.rounded()).magnitude))
+        let magnitude = value.magnitude.rounded()
+        guard magnitude.isFinite, magnitude < Double(Int.max) else { return "—" }
+        return grouped(String(Int(magnitude)))
     }
 
     /// 三位一组。只喂纯数字串。
