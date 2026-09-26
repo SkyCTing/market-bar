@@ -831,14 +831,19 @@ final class ReminderMissedTests: XCTestCase {
         XCTAssertEqual(missed.count, 1)
     }
 
-    /// 模态框没有时间跨度时什么都不补（避免无谓地重响）
-    func testZeroLengthWindowCatchesNothing() {
+    /// 闭区间包含恰好到点的那一刻，重复投递仍由原定时刻的 key 拦住。
+    func testExactInstantIsCaughtOnlyOnce() {
         let instant = at(25, 9, 0)
+        let item = reminder(hour: 9, minute: 0)
 
+        XCTAssertEqual(ReminderScheduler.missedScheduled(
+            in: [item], between: instant, and: instant, calendar: calendar
+        ).map(\.reminder.id), [item.id])
         XCTAssertTrue(ReminderScheduler.missedScheduled(
-            in: [reminder(hour: 9, minute: 0)],
+            in: [item],
             between: instant,
             and: instant,
+            firedKeys: [ReminderScheduler.fireKey(item, at: instant, calendar: calendar)],
             calendar: calendar
         ).isEmpty)
     }
