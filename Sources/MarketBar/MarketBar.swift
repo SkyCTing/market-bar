@@ -598,6 +598,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isMenuOpen = false
     private var isFloatingCharacterVisible = true
     private var floatingCharacterSize: FloatingCharacterSizeOption = .defaultOption
+    /// 问 AI 时把持仓（股数/成本/浮动盈亏）也放进快照。**默认关** ——
+    /// 这是本机数据，发不发由用户决定
+    private var snapshotIncludesHoldings = false
     /// 拖到屏幕边缘时直接收起（默认关，需要时在菜单「浮动窗口」里打开）
     private var hidesFloatingCharacterAtEdge = false
 
@@ -647,6 +650,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.toggle(anchor: anchor)
     }
 
+    /// 快照要不要带持仓。默认关：这是本机数据（股数、成本、盈亏），
+    /// 打开之后问 AI 时会一并发给 claude
+    @objc private func toggleSnapshotHoldings() {
+        snapshotIncludesHoldings.toggle()
+        rebuildMenu()
+        saveSettings()
+    }
+
     @objc private func askAIAboutMarket() {
         let controller = chatController ?? ClaudeChatController()
         chatController = controller
@@ -657,7 +668,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MarketSnapshotPrompt.make(
                 goldPrice: currentPrice,
                 quotes: quotes,
-                fetchedAt: lastUpdateTime
+                fetchedAt: lastUpdateTime,
+                includesHoldings: snapshotIncludesHoldings
             ),
             anchor: floatingCharacterController.anchorFrame
         )
@@ -927,6 +939,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let aiItem = NSMenuItem(title: "问 AI：当前行情…", action: #selector(askAIAboutMarket), keyEquivalent: "")
         aiItem.target = self
         menu.addItem(aiItem)
+
+        // 紧挨着「问 AI」放：它是那件事的一个开关
+        let holdingsToggle = NSMenuItem(
+            title: "问 AI 时带上持仓",
+            action: #selector(toggleSnapshotHoldings),
+            keyEquivalent: ""
+        )
+        holdingsToggle.target = self
+        holdingsToggle.state = snapshotIncludesHoldings ? .on : .off
+        menu.addItem(holdingsToggle)
         menu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -1393,6 +1415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let floatingCharacterSize = "floatingCharacterSize"
         static let reminderAcknowledge = "reminderAcknowledgeWindow"
         static let hidesAtEdge = "floatingCharacterHidesAtEdge"
+        static let snapshotHoldings = "snapshotIncludesHoldings"
     }
 
     private func saveSettings() {
@@ -1403,6 +1426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(floatingCharacterSize.rawValue, forKey: SettingsKey.floatingCharacterSize)
         defaults.set(reminderAcknowledge.rawValue, forKey: SettingsKey.reminderAcknowledge)
         defaults.set(hidesFloatingCharacterAtEdge, forKey: SettingsKey.hidesAtEdge)
+        defaults.set(snapshotIncludesHoldings, forKey: SettingsKey.snapshotHoldings)
     }
 
     private func loadSettings() {
@@ -1411,6 +1435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             selectedProvider = providerStr == "minSheng" ? .minSheng : .zheShang
         }
         hidesFloatingCharacterAtEdge = defaults.bool(forKey: SettingsKey.hidesAtEdge)
+        snapshotIncludesHoldings = defaults.bool(forKey: SettingsKey.snapshotHoldings)
         floatingCharacterController.hidesAtEdge = hidesFloatingCharacterAtEdge
         if let acknowledgeValue = defaults.object(forKey: SettingsKey.reminderAcknowledge) as? Double,
            let option = ReminderAcknowledgeOption(rawValue: acknowledgeValue) {
