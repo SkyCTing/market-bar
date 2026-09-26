@@ -225,8 +225,7 @@ enum ReminderScheduler {
 
     /// `[start, now]` 这段时间里本该响、却没能响的定时提醒。
     ///
-    /// 用来兜住「模态框阻塞主线程」：`runModal` 期间不会排下一次定时器，
-    /// 这期间到点的提醒原来就永远丢了。
+    /// 用来补算定时器迟到、睡眠和模态框阻塞期间错过的提醒。
     ///
     /// 判定方式：`start` 附近的下一次未响过的触发时刻 ≤ `now`。
     /// 返回原定时刻，方便调用方立即记录去重键，避免补响再被下一次弹窗重复补响。
@@ -239,7 +238,7 @@ enum ReminderScheduler {
         makeupWorkdays: Set<String> = [],
         calendar: Calendar = TradingSession.calendar
     ) -> [(reminder: Reminder, fireDate: Date)] {
-        guard now > start else { return [] }
+        guard now >= start else { return [] }
 
         return reminders.compactMap { reminder in
             guard reminder.kind == .scheduled else { return nil }

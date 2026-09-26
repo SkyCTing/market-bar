@@ -22,6 +22,7 @@ final class ReminderCenter {
     /// 呈现层。价格提醒也复用它 —— 这样「气泡 → 弹窗等待时间」全 app 只有一份
     let presenter: AlertPresenter
     private var timer: Timer?
+    private var scheduleToken = UUID()
     /// 有倒计时在跑时才存在：每秒刷一下头顶那行
     private var countdownTicker: Timer?
     private var snoozeCounts: [UUID: Int] = [:]
@@ -47,7 +48,7 @@ final class ReminderCenter {
     }
 
     /// 补响被模态框挡住的那几条。
-    /// 放到下一轮 runloop 再响：现在还在 checkDueReminders 的循环里，
+    /// 放到下一轮 runloop 再响：现在还在定时回调的循环里，
     /// 直接 fire 会在刚关掉的模态框上再叠一个嵌套模态框
     private func fireMissedReminders(between start: Date, and end: Date) {
         let missed = ReminderScheduler.missedScheduled(
@@ -113,6 +114,8 @@ final class ReminderCenter {
     private func scheduleNext() {
         timer?.invalidate()
         timer = nil
+        scheduleToken = UUID()
+        let token = scheduleToken
 
         let now = Date()
         let calendar = TradingSession.calendar
@@ -125,8 +128,12 @@ final class ReminderCenter {
             let interval = max(0.2, next.timeIntervalSince(now) - 0.2)
             timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.checkDueReminders()
-                    self?.scheduleNext()
+                    guard let self, self.scheduleToken == token else { return }
+                    for reminder in self.takeDueReminders(scheduledFor: next, at: Date()) {
+                        guard self.store.reminders.contains(where: { $0.id == reminder.id }) else { continue }
+                        self.fire(reminder)
+                    }
+                    self.scheduleNext()
                 }
             }
             if let timer { RunLoop.main.add(timer, forMode: .common) }
@@ -177,23 +184,27 @@ final class ReminderCenter {
         characterController.updateCountdown(countdownText())
     }
 
-    private func checkDueReminders() {
-        let now = Date()
-        for reminder in store.reminders
-        where ReminderScheduler.isDue(reminder, at: now, holidays: holidays, makeupWorkdays: makeupWorkdays) {
-            if reminder.kind == .countdown {
-                // 倒计时不靠 fireKey 去重：响完立刻推进状态（停掉或重新起算），
-                // 于是它自然就不再 isDue 了。循环计时每秒一次地去重反而会把 firedKeys 撑爆。
-                store.upsert(ReminderScheduler.afterCountdownFired(reminder, at: now))
-                fire(reminder)
-                continue
-            }
-
-            let key = ReminderScheduler.fireKey(reminder, at: now)
-            guard !firedKeys.contains(key) else { continue }
-            firedKeys.insert(key)
-            fire(reminder)
+    /// 以原定唤醒时刻补算区间；先登记整批，避免弹窗重入时再次补响同一条。
+    func takeDueReminders(scheduledFor scheduled: Date, at now: Date) -> [Reminder] {
+        guard now >= scheduled else { return [] }
+        let missed = ReminderScheduler.missedScheduled(
+            in: store.reminders,
+            between: scheduled,
+            and: now,
+            firedKeys: firedKeys,
+            holidays: holidays,
+            makeupWorkdays: makeupWorkdays
+        )
+        for (reminder, fireDate) in missed {
+            firedKeys.insert(ReminderScheduler.fireKey(reminder, at: fireDate))
         }
+        let countdowns = store.reminders.filter {
+            $0.kind == .countdown && ReminderScheduler.isDue($0, at: now)
+        }
+        for reminder in countdowns {
+            store.upsert(ReminderScheduler.afterCountdownFired(reminder, at: now))
+        }
+        return missed.map(\.reminder) + countdowns
     }
 
     /// 立即提醒（菜单里的「测试」也走这条）
