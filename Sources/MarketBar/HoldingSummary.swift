@@ -13,6 +13,16 @@ enum StockGrouping {
     /// 组的排列顺序固定：A股 → 港股 → 美股 → 其它。
     /// 不按「首次出现的顺序」—— 那样清单一改顺序，分组标题就跟着跳。
     /// 空组不出现。
+    /// 单个标的属于哪一组（面板逐行扫描时用它判断「该插组标题了」）
+    static func title(for row: StockRow) -> String {
+        switch StockMarket.forCode(row.quote.code) {
+        case .mainland: return "A股"
+        case .hongKong: return "港股"
+        case .unitedStates: return "美股"
+        default: return "其它"
+        }
+    }
+
     static func groups(_ rows: [StockRow]) -> [StockGroup] {
         var buckets: [StockGroup] = [
             StockGroup(market: .mainland, title: "A股", rows: []),
@@ -44,6 +54,36 @@ struct HoldingSummary: Equatable, Sendable {
     let floatingPercent: Double?
     /// 计入的标的数
     let counted: Int
+}
+
+extension HoldingSummary {
+    /// 这个币种在面板上叫什么
+    var marketTitle: String {
+        switch currency {
+        case "CNY": return "A股"
+        case "HKD": return "港股"
+        case "USD": return "美股"
+        default: return currency
+        }
+    }
+
+    /// 面板那一行：`A股   市值 1,284,000   当日 +1,234   浮动 +8,055 (+6.7%)`。
+    /// 缺的项直接不出现在这一行里 —— 不留「--」，那是行情列的写法，这里是汇总
+    var lineText: String {
+        var parts = ["市值 " + (marketValue.map(HoldingFormat.amount) ?? "—")]
+        if let todayProfit {
+            parts.append("当日 " + HoldingFormat.profitLossText(todayProfit))
+        }
+        if let floatingProfit {
+            var text = "浮动 " + HoldingFormat.profitLossText(floatingProfit)
+            if let floatingPercent {
+                let pct = ((floatingPercent * 100) * 100).rounded(.towardZero) / 100
+                text += String(format: " (%@%.2f%%)", pct > 0 ? "+" : "", pct)
+            }
+            parts.append(text)
+        }
+        return "\(marketTitle)   " + parts.joined(separator: "   ")
+    }
 }
 
 enum HoldingSummaryBuilder {

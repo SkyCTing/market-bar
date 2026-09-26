@@ -18,6 +18,7 @@ final class HoverPanelQuoteTimeTests: XCTestCase {
             isNegative: nil, updateTime: "08:00:00", refreshInterval: "1 秒",
             alertInfo: "未设置", market: .empty,
             stocks: [StockRow(quote: quote, volumeRatio: nil)],
+            summaries: [],
             holidays: [:], unread: .init()
         )
         let screen = try XCTUnwrap(NSScreen.main)
