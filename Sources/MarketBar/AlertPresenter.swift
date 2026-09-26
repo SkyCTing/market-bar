@@ -25,8 +25,14 @@ final class AlertPresenter {
     var onModalFinished: ((_ startedAt: Date, _ finishedAt: Date) -> Void)?
 
     private let characterController: FloatingCharacterController
+    private struct PendingConfirm {
+        let timer: Timer
+        let token: UUID
+    }
+
     /// 每条提醒各自的「气泡 → 弹窗」待确认定时器
-    private var pendingConfirms: [UUID: Timer] = [:]
+    private var pendingConfirms: [UUID: PendingConfirm] = [:]
+    private var visibleBubbleKey: UUID?
     /// 「10 分钟后再提醒」的顺延定时器，留着是为了能取消
     private var snoozeTimers: [UUID: Timer] = [:]
     private var snoozeCounts: [UUID: Int] = [:]
@@ -44,7 +50,16 @@ final class AlertPresenter {
 
         if methods.contains(.bubble) {
             NSSound(named: "Sosumi")?.play()
-            characterController.say(body.isEmpty ? title : body)
+            let text = body.isEmpty ? title : body
+            if methods.contains(.alert) {
+                characterController.say(
+                    text,
+                    duration: acknowledgeWindow,
+                    onAcknowledge: { [weak self] in self?.acknowledgeVisibleBubble() ?? false }
+                )
+            } else {
+                characterController.say(text)
+            }
         }
 
         guard methods.contains(.alert) else { return }
@@ -66,24 +81,44 @@ final class AlertPresenter {
 
     /// 取消所有还在等确认 / 等顺延的提醒（配置变了、或者用户清空了）
     func cancelAll() {
-        for timer in pendingConfirms.values { timer.invalidate() }
+        for pending in pendingConfirms.values { pending.timer.invalidate() }
         pendingConfirms.removeAll()
+        if visibleBubbleKey != nil { characterController.dismissSpeechBubble() }
+        visibleBubbleKey = nil
         for timer in snoozeTimers.values { timer.invalidate() }
         snoozeTimers.removeAll()
     }
 
+    /// 点击气泡或人物只确认当前显示的那条，不取消其它提醒或已经顺延的定时器。
+    @discardableResult
+    func acknowledgeVisibleBubble() -> Bool {
+        guard let key = visibleBubbleKey,
+              let pending = pendingConfirms.removeValue(forKey: key) else { return false }
+        pending.timer.invalidate()
+        visibleBubbleKey = nil
+        return true
+    }
+
+    var pendingConfirmationCount: Int { pendingConfirms.count }
+
     private func armPendingConfirm(title: String, body: String, methods: Reminder.Methods, key: UUID) {
-        pendingConfirms[key]?.invalidate()
+        pendingConfirms[key]?.timer.invalidate()
+        let token = UUID()
         let timer = Timer.scheduledTimer(withTimeInterval: acknowledgeWindow, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.pendingConfirms[key]?.token == token else { return }
                 self.pendingConfirms[key] = nil
+                if self.visibleBubbleKey == key {
+                    self.visibleBubbleKey = nil
+                    self.characterController.dismissSpeechBubble()
+                }
                 guard Self.canPresent(methods, characterVisible: self.characterController.isVisible) else { return }
                 self.presentModal(title: title, body: body, methods: methods, key: key)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        pendingConfirms[key] = timer
+        pendingConfirms[key] = PendingConfirm(timer: timer, token: token)
+        visibleBubbleKey = key
     }
 
     /// 置顶模态框。注意 runModal 会阻塞主线程一整轮（这期间金价刷新暂停），

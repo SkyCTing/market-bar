@@ -3,6 +3,69 @@ import XCTest
 @testable import MarketBar
 
 final class FloatingCharacterTests: XCTestCase {
+    @MainActor
+    func testReminderBubbleShowsClickableHintAndDismissesOnAcknowledgement() throws {
+        let controller = FloatingCharacterSpeechBubbleController()
+        let screen = try XCTUnwrap(NSScreen.main)
+        var acknowledged = false
+        controller.show(
+            text: "喝水",
+            anchor: NSRect(x: screen.frame.midX, y: screen.frame.midY, width: 200, height: 200),
+            visibleFrame: screen.visibleFrame,
+            duration: nil,
+            onAcknowledge: { acknowledged = true; return true }
+        )
+        defer { controller.dismiss() }
+
+        let panel = try XCTUnwrap(NSApp.windows.first {
+            $0.contentView is FloatingCharacterSpeechBubbleView && $0.isVisible
+        })
+        let bubble = try XCTUnwrap(panel.contentView as? FloatingCharacterSpeechBubbleView)
+        XCTAssertFalse(panel.ignoresMouseEvents)
+        XCTAssertEqual(controller.frame.height, 82)
+        XCTAssertTrue(bubble.subviews.contains {
+            ($0 as? NSTextField)?.stringValue == "点击气泡或宠物确认" && !$0.isHidden
+        })
+        XCTAssertTrue(bubble.hitTest(NSPoint(x: 98, y: 40)) === bubble)
+        let click = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: 98, y: 40),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: panel.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        ))
+        bubble.mouseUp(with: click)
+        XCTAssertTrue(acknowledged)
+        XCTAssertFalse(controller.isVisible)
+    }
+
+    @MainActor
+    func testClickingPetConfirmsReminderBeforeNormalClickReaction() throws {
+        let suite = "FloatingCharacterAcknowledgement.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = FloatingCharacterController(defaults: defaults, idleTimeProvider: { 0 })
+        controller.setVisible(true)
+        defer { controller.setVisible(false) }
+        var confirmations = 0
+        controller.onReminderClick = {
+            confirmations += 1
+            return true
+        }
+
+        let pet = try XCTUnwrap(NSApp.windows.compactMap {
+            $0.contentView as? FloatingCharacterView
+        }.first)
+        pet.onClick?()
+
+        XCTAssertEqual(confirmations, 1)
+        XCTAssertEqual(controller.motionState, .ambient)
+    }
+
     func testEmotionUsesSadOnlyForNegativePrices() {
         XCTAssertEqual(FloatingCharacterEmotion(isNegative: true), .sad)
         XCTAssertEqual(FloatingCharacterEmotion(isNegative: false), .happy)

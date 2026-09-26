@@ -619,6 +619,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         floatingCharacterController.setVisible(isFloatingCharacterVisible)
         reminderCenter.start()
+        floatingCharacterController.onReminderClick = { [weak self] in
+            self?.reminderCenter.acknowledge() ?? false
+        }
         floatingCharacterController.onRightClick = { [weak self] anchor in
             self?.showChat(anchor: anchor)
         }

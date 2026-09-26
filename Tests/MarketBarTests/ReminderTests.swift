@@ -936,3 +936,30 @@ final class AlertPresenterRoutingTests: XCTestCase {
         XCTAssertEqual(center.presenter.stillValid?(price.id), false)
     }
 }
+
+@MainActor
+final class ReminderAcknowledgementTests: XCTestCase {
+    func testClickAcknowledgesOnlyVisiblePendingReminder() throws {
+        let suite = "ReminderAcknowledgement.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let character = FloatingCharacterController(defaults: defaults, idleTimeProvider: { 0 })
+        character.setVisible(true)
+        defer { character.setVisible(false) }
+
+        let presenter = AlertPresenter(characterController: character)
+        presenter.acknowledgeWindow = 30
+        defer { presenter.cancelAll() }
+        let first = UUID()
+        let second = UUID()
+        presenter.fire(title: "第一条", body: "第一条", methods: .default, key: first)
+        presenter.fire(title: "第二条", body: "第二条", methods: .default, key: second)
+
+        XCTAssertEqual(presenter.pendingConfirmationCount, 2)
+        XCTAssertTrue(presenter.acknowledgeVisibleBubble())
+        XCTAssertEqual(presenter.pendingConfirmationCount, 1, "点气泡不能取消其它提醒")
+        XCTAssertFalse(presenter.acknowledgeVisibleBubble(), "一次点击只确认当前显示的一条")
+        presenter.cancelAll()
+        XCTAssertEqual(presenter.pendingConfirmationCount, 0)
+    }
+}
