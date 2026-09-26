@@ -16,15 +16,24 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    /// 往哪边越过
-    enum Direction: String, Codable, Equatable, Sendable {
+    /// 触发条件
+    enum Direction: Equatable, Sendable {
         case above   // 涨到 ≥ 阈值
         case below   // 跌到 ≤ 阈值
+        /// 相对 N 分钟前的价格，涨**跌**超过 X% 都算（阈值存百分比，如 2 表示 2%）
+        case movesWithin(percent: Double, minutes: Int)
+
+        /// 相对参考价的涨跌幅（带符号；参考价非法返回 nil）
+        static func movement(price: Double, reference: Double) -> Double? {
+            guard reference > 0, price.isFinite, reference.isFinite else { return nil }
+            return (price - reference) / reference
+        }
 
         var title: String {
             switch self {
             case .above: return "高于"
             case .below: return "低于"
+            case .movesWithin(_, let minutes): return "\(minutes) 分钟内涨跌"
             }
         }
 
@@ -32,6 +41,7 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
             switch self {
             case .above: return "≥"
             case .below: return "≤"
+            case .movesWithin(let percent, _): return String(format: "±%.2f%%", percent)
             }
         }
 
@@ -39,14 +49,17 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
             switch self {
             case .above: return "📈"
             case .below: return "📉"
+            case .movesWithin: return "⚡️"
             }
         }
 
-        /// 这一刻算不算「已经越过阈值」
+        /// 这一刻算不算「已经越过阈值」。
+        /// 「N 分钟内涨跌」没有固定阈值，走 movement(price:reference:) 那条路
         func isBeyond(price: Double, threshold: Double) -> Bool {
             switch self {
             case .above: return price >= threshold
             case .below: return price <= threshold
+            case .movesWithin: return false
             }
         }
 
@@ -57,6 +70,7 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
             switch self {
             case .above: return price < threshold
             case .below: return price > threshold
+            case .movesWithin: return false
             }
         }
     }
@@ -83,7 +97,12 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
     func summary(displayName: String) -> String {
         let currency = target.code.flatMap(StockMarket.forCode)?.currency
         let suffix = currency.flatMap { $0 == "CNY" ? nil : " \($0)" } ?? ""
-        return "\(direction.arrow) \(displayName) \(direction.symbol) \(String(format: "%.2f", threshold))\(suffix)"
+        switch direction {
+        case .above, .below:
+            return "\(direction.arrow) \(displayName) \(direction.symbol) \(String(format: "%.2f", threshold))\(suffix)"
+        case .movesWithin(let percent, let minutes):
+            return "\(direction.arrow) \(displayName) \(minutes) 分钟内涨跌 ±\(String(format: "%.2f", percent))%"
+        }
     }
 
     /// 真正要显示的正文
@@ -94,12 +113,45 @@ struct PriceAlert: Codable, Equatable, Identifiable, Sendable {
     /// 没自定义时的默认提示语。用户点名要「股票代码冒号+价格」
     static func defaultMessage(for alert: PriceAlert, price: Double) -> String {
         let formatted = String(format: "%.2f", price)
+        let prefix: String
         switch alert.target {
-        case .gold: return "金价: \(formatted)"
+        case .gold:
+            prefix = "金价: \(formatted)"
         case .stock(let code):
             let currency = StockMarket.forCode(code)?.currency
             let suffix = currency.flatMap { $0 == "CNY" ? nil : " \($0)" } ?? ""
-            return "\(code): \(formatted)\(suffix)"
+            prefix = "\(code): \(formatted)\(suffix)"
+        }
+
+        // 涨跌提醒把条件也说清楚，不然光看价格不知道为什么会响
+        if case .movesWithin(let percent, let minutes) = alert.direction {
+            return "\(prefix)（\(minutes) 分钟内涨跌超过 \(String(format: "%.2f", percent))%）"
+        }
+        return prefix
+    }
+}
+
+extension PriceAlert.Direction: Codable {
+    /// 存成 `"above"` / `"below"` / `"move:2.0:5"`。
+    /// ⚠️ 老数据只有前两个裸字符串，必须继续认
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw.hasPrefix("move:") {
+            let parts = raw.dropFirst("move:".count).split(separator: ":")
+            if parts.count == 2, let percent = Double(parts[0]), let minutes = Int(parts[1]) {
+                self = .movesWithin(percent: percent, minutes: minutes)
+                return
+            }
+        }
+        self = raw == "below" ? .below : .above
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .above: try container.encode("above")
+        case .below: try container.encode("below")
+        case .movesWithin(let percent, let minutes): try container.encode("move:\(percent):\(minutes)")
         }
     }
 }
@@ -148,8 +200,31 @@ enum PriceAlertEvaluator {
     ///
     /// - 越过阈值且还没告警过 → 响，闩锁置上
     /// - 回到阈值内侧 → 只有勾了「重复提醒」才把闩锁复位（不重复的就一直锁着，响一次就完）
-    static func evaluate(_ alert: PriceAlert, price: Double) -> (fired: Bool, updated: PriceAlert) {
+    /// `referencePrice` 只对「N 分钟内涨跌」用得上：那是 N 分钟前的价格。
+    /// 拿不到参考价时**什么都不做**（不响也不动闩锁）—— 宁可这轮不判，也别瞎判
+    static func evaluate(
+        _ alert: PriceAlert,
+        price: Double,
+        referencePrice: Double? = nil
+    ) -> (fired: Bool, updated: PriceAlert) {
         var updated = alert
+
+        if case .movesWithin(let percent, _) = alert.direction {
+            guard let referencePrice,
+                  let move = PriceAlert.Direction.movement(price: price, reference: referencePrice)
+            else { return (false, updated) }
+
+            guard abs(move) >= percent / 100 else {
+                // 波动回到阈值内：只有要重复提醒的才重新武装
+                if alert.repeats, alert.isTriggered {
+                    updated.isTriggered = false
+                }
+                return (false, updated)
+            }
+            guard !alert.isTriggered else { return (false, updated) }
+            updated.isTriggered = true
+            return (true, updated)
+        }
 
         guard alert.direction.isBeyond(price: price, threshold: alert.threshold) else {
             // 回到内侧：只有要重复提醒的才重新武装
