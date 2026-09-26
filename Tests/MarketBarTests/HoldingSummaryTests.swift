@@ -152,4 +152,45 @@ final class HoldingSummaryTests: XCTestCase {
     func testEmptyInputGivesNoSummaries() {
         XCTAssertTrue(HoldingSummaryBuilder.summaries([]).isEmpty)
     }
+
+    // MARK: 面板那一行的文本
+
+    func testLineText() {
+        let summary = HoldingSummary(
+            currency: "CNY", marketValue: 1_284_000,
+            todayProfit: 1_234, floatingProfit: 8_055, floatingPercent: 0.067,
+            counted: 3
+        )
+
+        XCTAssertEqual(summary.lineText, "A股   市值 1,284,000   当日 +1,234   浮动 +8,055 (+6.70%)")
+    }
+
+    func testLineTextSkipsMissingParts() {
+        let summary = HoldingSummary(
+            currency: "USD", marketValue: 20_000,
+            todayProfit: nil, floatingProfit: nil, floatingPercent: nil,
+            counted: 1
+        )
+
+        XCTAssertEqual(summary.lineText, "美股   市值 20,000", "缺的项直接不出现，不留「--」")
+    }
+
+    func testLineTextForEachCurrency() {
+        func title(_ currency: String) -> String {
+            HoldingSummary(currency: currency, marketValue: 1, todayProfit: nil,
+                           floatingProfit: nil, floatingPercent: nil, counted: 1).marketTitle
+        }
+
+        XCTAssertEqual(title("CNY"), "A股")
+        XCTAssertEqual(title("HKD"), "港股")
+        XCTAssertEqual(title("USD"), "美股")
+    }
+
+    func testAmountFormatting() {
+        XCTAssertEqual(HoldingFormat.amount(1_284_000), "1,284,000")
+        XCTAssertEqual(HoldingFormat.amount(0), "0")
+        XCTAssertEqual(HoldingFormat.amount(12.4), "12", "四舍五入到整数元")
+        XCTAssertEqual(HoldingFormat.amount(-500), "500", "市值不带符号")
+        XCTAssertEqual(HoldingFormat.amount(.nan), "—")
+    }
 }

@@ -1493,6 +1493,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let alertInfo = alertParts.isEmpty ? "未设置" : alertParts.joined(separator: " | ")
 
+        // 行算一次，汇总直接用它 —— 两边取同一批数据，不会出现
+        // 「列表里有的没算进汇总」这种对不上的情况
+        let stockRows = StockWatchlist.entries.map { entry -> StockRow in
+            let quote = currentStockQuotes[entry.code]
+                ?? .placeholder(code: entry.code, name: entry.name)
+            let market = StockMarket.forCode(entry.code) ?? .mainland
+            let showProfit = market == .mainland
+                ? showsTodayProfit
+                : market.showsTodayProfit(at: Date(), quoteDate: quote.sessionDate)
+            return StockRow(
+                quote: quote,
+                volumeRatio: stockVolumeRatio(for: quote),
+                showsProfitLoss: showProfit
+            )
+        }
+
         return HoverPanelData(
             provider: selectedProvider.displayName,
             price: format(price: currentPrice),
@@ -1503,19 +1519,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refreshInterval: refreshInterval.title,
             alertInfo: alertInfo,
             market: currentMarketData,
-            stocks: StockWatchlist.entries.map { entry in
-                let quote = currentStockQuotes[entry.code]
-                    ?? .placeholder(code: entry.code, name: entry.name)
-                let market = StockMarket.forCode(entry.code) ?? .mainland
-                let showProfit = market == .mainland
-                    ? showsTodayProfit
-                    : market.showsTodayProfit(at: Date(), quoteDate: quote.sessionDate)
-                return StockRow(
-                    quote: quote,
-                    volumeRatio: stockVolumeRatio(for: quote),
-                    showsProfitLoss: showProfit
-                )
-            },
+            stocks: stockRows,
+            summaries: HoldingSummaryBuilder.summaries(stockRows),
             holidays: holidays,
             unread: unreadCounts
         )
@@ -1658,6 +1663,8 @@ struct HoverPanelData {
     let alertInfo: String
     let market: MarketData
     let stocks: [StockRow]
+    /// 分币种的持仓汇总（没有持仓时为空）
+    let summaries: [HoldingSummary]
     let holidays: [String: String]
     let unread: UnreadBadge.Counts
 }
@@ -1831,6 +1838,15 @@ final class HoverPanel {
             return label
         }
 
+        /// 分组标题。用区块标题那档颜色，和普通行区分开
+        func makeGroupHeader(_ title: String) -> NSTextField {
+            let label = makeStockTitleLabel()
+            label.stringValue = title
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = sectionTitleColor
+            return label
+        }
+
         func makeStockCell(_ text: String, weight: NSFont.Weight, color: NSColor) -> NSTextField {
             let label = NSTextField(labelWithString: text)
             label.font = .monospacedDigitSystemFont(ofSize: 11, weight: weight)
@@ -1863,9 +1879,31 @@ final class HoverPanel {
             makeStockCell(Self.floatingHeader, weight: .regular, color: labelColor)
         ))
 
+        // 按市场分组：组标题当成一行插进同一个数组，复用下面那套行约束，
+        // 不必给循环加「这行是标题」的特例。
+        // 只有一组时不插 —— 全是 A股 的时候顶个「A股」是噪声
+        let showsGroupTitles = StockGrouping.groups(data.stocks).count > 1
+        var currentGroupTitle: String?
+
         for row in data.stocks {
             let quote = row.quote
             let now = Date()
+
+            if showsGroupTitles {
+                let groupTitle = StockGrouping.title(for: row)
+                if groupTitle != currentGroupTitle {
+                    currentGroupTitle = groupTitle
+                    stockRowCells.append((
+                        makeGroupHeader(groupTitle),
+                        makeStockCell("", weight: .regular, color: labelColor),
+                        makeStockCell("", weight: .regular, color: labelColor),
+                        makeStockCell("", weight: .regular, color: labelColor),
+                        makeStockCell("", weight: .regular, color: labelColor),
+                        makeStockCell("", weight: .regular, color: labelColor),
+                        makeStockCell("", weight: .regular, color: labelColor)
+                    ))
+                }
+            }
 
             // 名称单独一列；倍数与「放量/缩量」各占一列，这样数字才能竖向对齐
             let tl = makeStockTitleLabel()
@@ -2038,6 +2076,35 @@ final class HoverPanel {
                 cells.floating.widthAnchor.constraint(equalToConstant: Self.floatingColumnWidth),
             ])
             prev = cells.title.bottomAnchor
+        }
+
+        // --- 持仓总览（分币种，不同币种不相加）---
+        if !data.summaries.isEmpty {
+            let summaryTitle = NSTextField(labelWithString: "持仓总览")
+            summaryTitle.font = .systemFont(ofSize: 11, weight: .semibold)
+            summaryTitle.textColor = sectionTitleColor
+            summaryTitle.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(summaryTitle)
+            constraints.append(contentsOf: [
+                summaryTitle.topAnchor.constraint(equalTo: prev, constant: 10),
+                summaryTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            ])
+            prev = summaryTitle.bottomAnchor
+
+            for summary in data.summaries {
+                let line = NSTextField(labelWithString: summary.lineText)
+                line.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+                line.textColor = valueColor
+                line.lineBreakMode = .byTruncatingTail
+                line.translatesAutoresizingMaskIntoConstraints = false
+                container.addSubview(line)
+                constraints.append(contentsOf: [
+                    line.topAnchor.constraint(equalTo: prev, constant: 5),
+                    line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+                    line.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -padding),
+                ])
+                prev = line.bottomAnchor
+            }
         }
 
         // --- Divider 3 (信息段) ---

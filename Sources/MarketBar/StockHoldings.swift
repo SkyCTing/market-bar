@@ -122,6 +122,12 @@ enum HoldingFormat {
         return "\(profitLossText(profit))  \(sign)\(String(format: "%.2f", pct))%"
     }
 
+    /// 市值这类**不带正负号**的金额："1,284,000"。四舍五入到整数元
+    static func amount(_ value: Double) -> String {
+        guard value.isFinite else { return "—" }
+        return grouped(String(Int(value.rounded()).magnitude))
+    }
+
     /// 三位一组。只喂纯数字串。
     static func grouped(_ digits: String) -> String {
         guard digits.count > 3 else { return digits }
