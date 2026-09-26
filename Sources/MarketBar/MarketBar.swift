@@ -598,10 +598,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isMenuOpen = false
     private var isFloatingCharacterVisible = true
     private var floatingCharacterSize: FloatingCharacterSizeOption = .defaultOption
-    /// 全局热键的监视器（退出时要摘掉）
-    private var hotKeyMonitors: [Any] = []
-    /// 呼出面板的快捷键：⌥⌘M
-    private static let panelHotKey = (modifiers: NSEvent.ModifierFlags([.option, .command]), key: "m")
+    /// 快捷键：行情面板 / 宠物显隐。nil = 用户清掉了
+    private var panelHotKey: KeyCombo? = KeyCombo.defaultPanel
+    private var characterHotKey: KeyCombo? = KeyCombo.defaultCharacter
+    private let hotKeyCenter = HotKeyCenter()
     /// 问 AI 时把持仓（股数/成本/浮动盈亏）也放进快照。**默认关** ——
     /// 这是本机数据，发不发由用户决定
     private var snapshotIncludesHoldings = false
@@ -641,7 +641,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.saveSettings()
             self.rebuildMenu()
         }
-        setupGlobalHotKey()
+        panelHotKey = loadHotKey(forKey: SettingsKey.panelHotKey, fallback: KeyCombo.defaultPanel)
+        characterHotKey = loadHotKey(forKey: SettingsKey.characterHotKey, fallback: KeyCombo.defaultCharacter)
+        applyHotKeys()
         refreshHolidaysIfNeeded()
         Task {
             await self.refreshPrice()
@@ -682,8 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
     func applicationWillTerminate(_ notification: Notification) {
-        for monitor in hotKeyMonitors { NSEvent.removeMonitor(monitor) }
-        hotKeyMonitors.removeAll()
+        hotKeyCenter.stop()
         accessibilityRestartTimer?.invalidate()
         chatController?.shutdown()
     }
@@ -943,11 +944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(makeWatchlistMenuItem())
         menu.addItem(makeReminderMenuItem())
-        let hotKeyItem = NSMenuItem(
-            title: "呼出行情面板（⌥⌘M）",
-            action: #selector(toggleHoverPanel),
-            keyEquivalent: ""
-        )
+        let hotKeyItem = NSMenuItem(title: "快捷键…", action: #selector(showHotKeySettings), keyEquivalent: "")
         hotKeyItem.target = self
         menu.addItem(hotKeyItem)
 
@@ -1431,6 +1428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let reminderAcknowledge = "reminderAcknowledgeWindow"
         static let hidesAtEdge = "floatingCharacterHidesAtEdge"
         static let snapshotHoldings = "snapshotIncludesHoldings"
+        static let panelHotKey = "panelHotKey"
+        static let characterHotKey = "characterHotKey"
     }
 
     private func saveSettings() {
@@ -1442,6 +1441,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(reminderAcknowledge.rawValue, forKey: SettingsKey.reminderAcknowledge)
         defaults.set(hidesFloatingCharacterAtEdge, forKey: SettingsKey.hidesAtEdge)
         defaults.set(snapshotIncludesHoldings, forKey: SettingsKey.snapshotHoldings)
+        saveHotKey(panelHotKey, forKey: SettingsKey.panelHotKey)
+        saveHotKey(characterHotKey, forKey: SettingsKey.characterHotKey)
     }
 
     private func loadSettings() {
@@ -1472,35 +1473,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Hover Panel
 
-    /// 全局快捷键呼出/收起面板。
-    ///
-    /// 用 `NSEvent` 监视器而不是 Carbon 热键：代码少得多，而本 app 本来就需要
-    /// 辅助功能权限（微信未读徽标用）。代价是这个键**不会**被吃掉（Carbon 会），
-    /// 所以选了个不容易冲突的组合 ⌥⌘M。
-    ///
-    /// 两个监视器缺一不可：全局的收不到本 app 自己是前台时的按键，本地的只管那时。
-    private func setupGlobalHotKey() {
-        func matches(_ event: NSEvent) -> Bool {
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard flags == Self.panelHotKey.modifiers else { return false }
-            return event.charactersIgnoringModifiers?.lowercased() == Self.panelHotKey.key
-        }
-
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard matches(event) else { return }
-            Task { @MainActor in self?.toggleHoverPanel() }
-        }) {
-            hotKeyMonitors.append(monitor)
-        }
-        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard matches(event) else { return event }
-            Task { @MainActor in self?.toggleHoverPanel() }
-            return nil   // 本 app 自己前台时把它吃掉
-        }) {
-            hotKeyMonitors.append(monitor)
-        }
-    }
-
     /// 快捷键呼出/收起面板。位置和鼠标悬停时用的是同一个（状态项的 frame）
     @objc private func toggleHoverPanel() {
         if hoverPanel?.isVisible == true {
@@ -1509,6 +1481,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         guard let button = statusItem.button, let window = button.window else { return }
         showHoverPanel(below: window.convertToScreen(button.convert(button.bounds, to: nil)))
+    }
+
+    /// 把当前配置装到监视器上。配置改了重新调一次即可
+    private func applyHotKeys() {
+        var bindings: [(combo: KeyCombo, action: () -> Void)] = []
+        if let panelHotKey {
+            bindings.append((panelHotKey, { [weak self] in self?.toggleHoverPanel() }))
+        }
+        if let characterHotKey {
+            bindings.append((characterHotKey, { [weak self] in self?.toggleFloatingCharacter() }))
+        }
+        hotKeyCenter.bind(bindings)
+    }
+
+    /// 「快捷键…」设置
+    @objc private func showHotKeySettings() {
+        let form = HotKeySettingsView(panel: panelHotKey, character: characterHotKey)
+
+        let dialog = NSAlert()
+        dialog.messageText = "快捷键"
+        dialog.informativeText = "两项都可以留空（留空 = 不设快捷键）"
+        dialog.addButton(withTitle: "保存")
+        dialog.addButton(withTitle: "取消")
+        dialog.accessoryView = form
+        dialog.window.initialFirstResponder = form.firstResponderControl
+
+        guard dialog.runModal() == .alertFirstButtonReturn else { return }
+        panelHotKey = form.panelCombo
+        characterHotKey = form.characterCombo
+        applyHotKeys()
+        rebuildMenu()
+        saveSettings()
+    }
+
+    private func saveHotKey(_ combo: KeyCombo?, forKey key: String) {
+        // 存 Optional：解出来是 nil 表示「用户清掉了」，和「压根没设过」要分开
+        guard let data = try? JSONEncoder().encode(combo) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    private func loadHotKey(forKey key: String, fallback: KeyCombo?) -> KeyCombo? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return fallback }
+        return (try? JSONDecoder().decode(KeyCombo?.self, from: data)) ?? fallback
     }
 
     private func setupHoverTracking() {
