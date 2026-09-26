@@ -1213,7 +1213,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.show(reminders: reminderStore.reminders, priceAlerts: priceAlertStore.alerts)
     }
 
+    /// 删除不可逆，删之前先问一句
+    private func confirmDeletion(_ message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "确认删除？"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func deleteReminderEntries(_ entries: [ReminderListEntry]) {
+        guard !entries.isEmpty else { return }
+        guard confirmDeletion("将删除选中的 \(entries.count) 条提醒，删除后无法恢复。") else { return }
+
         for entry in entries {
             switch entry {
             case .reminder(let reminder): reminderStore.remove(id: reminder.id)
@@ -1263,6 +1277,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 「清除全部」现在把两类提醒一起清 —— 菜单是合起来的，清一半会很怪。
     /// 想只清一类就去管理窗口里多选删除
     @objc private func clearReminders() {
+        let total = reminderStore.reminders.count + priceAlertStore.alerts.count
+        guard total > 0 else { return }
+        guard confirmDeletion("将删除全部 \(total) 条提醒（含价格提醒），删除后无法恢复。") else { return }
+
         reminderStore.removeAll()
         priceAlertStore.removeAll()
         reminderCenter.presenter.cancelAll()
@@ -1289,9 +1307,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let response = alert.runModal()
         if response == .alertThirdButtonReturn, let reminder {
+            guard confirmDeletion("将删除「\(reminder.body)」，删除后无法恢复。") else { return }
             reminderStore.remove(id: reminder.id)
             reminderCenter.reload()
             rebuildMenu()
+            refreshReminderListIfVisible()
             return
         }
         guard response == .alertFirstButtonReturn else { return }
@@ -1428,13 +1448,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showPriceAlertDialog(editing: alert)
     }
 
-    @objc private func clearAllPriceAlerts() {
-        priceAlertStore.removeAll()
-        reminderCenter.presenter.cancelAll()
-        rebuildMenu()
-        refreshReminderListIfVisible()
-    }
-
     private func showPriceAlertDialog(editing alert: PriceAlert?) {
         let form = PriceAlertDialogView(
             alert: alert,
@@ -1454,9 +1467,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let response = dialog.runModal()
         if response == .alertThirdButtonReturn, let alert {
+            let name = alert.message.isEmpty ? alert.summary(displayName: displayName(for: alert.target)) : alert.message
+            guard confirmDeletion("将删除「\(name)」，删除后无法恢复。") else { return }
             priceAlertStore.remove(id: alert.id)
             reminderCenter.presenter.cancelAll()
             rebuildMenu()
+            refreshReminderListIfVisible()
             return
         }
         guard response == .alertFirstButtonReturn else { return }
