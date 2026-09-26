@@ -49,9 +49,14 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
         case weekly(weekday: Int)   // 1=周日 … 7=周六（Calendar 的 weekday 约定）
         case monthly(day: Int)      // 1…31，当月没有这一天就跳过
         case everyDays(interval: Int)  // 每 N 天（从创建那天算起）
+        /// 只提醒一次。**哪一天存在 `anchorDay` 里** —— 那个字段本来就是 yyyy-MM-dd
+        /// （everyDays 拿它当起算日，once 拿它当那一次的日期），复用它就不必给枚举加负载、
+        /// 也就不用改编码形状
+        case once
 
         var title: String {
             switch self {
+            case .once: return "只一次"
             case .daily: return "每天"
             case .weekly(let weekday):
                 let names = ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"]
@@ -98,6 +103,10 @@ struct Reminder: Codable, Equatable, Identifiable, Sendable {
     var summary: String {
         switch kind {
         case .scheduled:
+            // 「只一次」要把日期说出来，不然只看到「只一次」不知道是哪天
+            if case .once = repeatRule, !anchorDay.isEmpty {
+                return "\(anchorDay) \(timeText) · \(body)"
+            }
             return "\(timeText)  \(repeatRule.title) · \(body)"
         case .countdown:
             // 与定时那条格式对齐：<前缀>  <重复> · <正文>
@@ -171,6 +180,9 @@ enum ReminderScheduler {
               (parts.second ?? 0) == reminder.second else { return false }
 
         switch reminder.repeatRule {
+        case .once:
+            // 日期对不上就不响；对上了时间也已经在上面比过
+            return !reminder.anchorDay.isEmpty && anchorDayString(from: date, calendar: calendar) == reminder.anchorDay
         case .daily:
             return true
         case .weekly(let weekday):
@@ -255,6 +267,35 @@ enum ReminderScheduler {
         }
     }
 
+    /// 某一天 → "yyyy-MM-dd"（北京时间）。`daysBetween` 的反向操作
+    static func anchorDayString(from date: Date, calendar: Calendar = TradingSession.calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TradingSession.timeZone
+        return formatter.string(from: date)
+    }
+
+    /// "yyyy-MM-dd" + 时分秒 → 具体时刻；日期非法返回 nil
+    static func date(
+        onDay day: String,
+        hour: Int,
+        minute: Int,
+        second: Int,
+        calendar: Calendar = TradingSession.calendar
+    ) -> Date? {
+        guard !day.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TradingSession.timeZone
+        guard let base = formatter.date(from: day) else { return nil }
+
+        var parts = calendar.dateComponents([.year, .month, .day], from: base)
+        parts.hour = hour
+        parts.minute = minute
+        parts.second = second
+        return calendar.date(from: parts)
+    }
+
     /// 两个「天」之间差几天（按北京时间的日历日算）；锚点为空/非法返回 nil
     static func daysBetween(_ anchorDay: String, and date: Date, calendar: Calendar = TradingSession.calendar) -> Int? {
         guard !anchorDay.isEmpty else { return nil }
@@ -297,6 +338,24 @@ enum ReminderScheduler {
         // 「每 N 天」的搜索窗口要跟着 N 走：固定 370 天时，N > 370 永远找不到下一次，
         // 那条提醒就成了菜单上看着正常、却永远不响的死条（填个 400 天就会踩到）。
         // 下一次最多在 N 天内出现（对齐到锚点），再加几天余量兜住「跳过节假日」连跳
+        // 「只一次」只可能在指定那一天响，逐天循环没意义 —— 直接算那一个时刻，
+        // 过去了就返回 nil（于是它再也不会排程，这就是「一次性」）
+        if case .once = reminder.repeatRule {
+            // 写全名：这里的 `date` 是参数，会把静态方法遮住
+            guard let target = Self.date(
+                onDay: reminder.anchorDay,
+                hour: reminder.hour,
+                minute: reminder.minute,
+                second: reminder.second,
+                calendar: calendar
+            ), target > date else { return nil }
+            if reminder.skipHolidays,
+               MarketCalendar.isRestDay(target, holidays: holidays, makeupWorkdays: makeupWorkdays, calendar: calendar) {
+                return nil
+            }
+            return target
+        }
+
         var horizon = 370
         if case .everyDays(let interval) = reminder.repeatRule {
             horizon = max(horizon, max(1, interval) + 7)

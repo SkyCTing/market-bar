@@ -162,9 +162,14 @@ final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate
             case "kind": return reminder.kind == .countdown ? "倒计时" : "定时"
             case "content": return reminder.body
             case "rule":
-                return reminder.kind == .countdown
-                    ? "\(CountdownFormat.duration(reminder.countdownSeconds))·\(reminder.repeatsCountdown ? "循环" : "一次")"
-                    : "\(reminder.timeText) \(reminder.repeatRule.title)"
+                if reminder.kind == .countdown {
+                    return "\(CountdownFormat.duration(reminder.countdownSeconds))·\(reminder.repeatsCountdown ? "循环" : "一次")"
+                }
+                // 「只一次」要把日期说出来，不然只看到「只一次」不知道是哪天
+                if case .once = reminder.repeatRule, !reminder.anchorDay.isEmpty {
+                    return "\(reminder.anchorDay) \(reminder.timeText)"
+                }
+                return "\(reminder.timeText) \(reminder.repeatRule.title)"
             case "methods": return reminder.methods.title
             default: return ""
             }

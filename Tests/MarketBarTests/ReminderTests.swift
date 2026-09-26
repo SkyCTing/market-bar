@@ -963,3 +963,106 @@ final class ReminderAcknowledgementTests: XCTestCase {
         XCTAssertEqual(presenter.pendingConfirmationCount, 0)
     }
 }
+
+
+// MARK: - 一次性提醒（只提醒一次）
+
+final class ReminderOnceTests: XCTestCase {
+    private let calendar = TradingSession.calendar
+
+    private func once(day: String, hour: Int, minute: Int, second: Int = 0) -> Reminder {
+        var reminder = Reminder(title: "t", body: "交表", hour: hour, minute: minute, second: second, repeatRule: .once)
+        reminder.anchorDay = day
+        return reminder
+    }
+
+    private func at(_ day: Int, _ hour: Int, _ minute: Int, _ second: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute, second: second))!
+    }
+
+    /// 指定那一天的那个时刻才响
+    func testFiresOnTheChosenDayAndTime() {
+        let reminder = once(day: "2026-09-27", hour: 15, minute: 0)
+
+        XCTAssertTrue(ReminderScheduler.isDue(reminder, at: at(27, 15, 0), calendar: calendar))
+    }
+
+    /// 第二天同一时刻不该再响 —— 这就是「一次性」和「每天」的区别
+    func testDoesNotFireOnTheNextDay() {
+        let reminder = once(day: "2026-09-27", hour: 15, minute: 0)
+
+        XCTAssertFalse(ReminderScheduler.isDue(reminder, at: at(28, 15, 0), calendar: calendar))
+    }
+
+    func testDoesNotFireOnTheSameDayAtAnotherTime() {
+        let reminder = once(day: "2026-09-27", hour: 15, minute: 0)
+
+        XCTAssertFalse(ReminderScheduler.isDue(reminder, at: at(27, 14, 59), calendar: calendar))
+    }
+
+    /// 日期没填就不响（也别退化成「每天」，那是很糟的失败方式）
+    func testEmptyDayNeverFires() {
+        let reminder = once(day: "", hour: 15, minute: 0)
+
+        XCTAssertFalse(ReminderScheduler.isDue(reminder, at: at(27, 15, 0), calendar: calendar))
+        XCTAssertNil(ReminderScheduler.nextFireDate(after: at(26, 0, 0), reminder: reminder, calendar: calendar))
+    }
+
+    func testNextFireDateIsThatMoment() {
+        let reminder = once(day: "2026-09-27", hour: 15, minute: 0)
+
+        XCTAssertEqual(
+            ReminderScheduler.nextFireDate(after: at(26, 0, 0), reminder: reminder, calendar: calendar),
+            at(27, 15, 0)
+        )
+    }
+
+    /// 那一刻过去之后就不再排程了 —— 于是它永远不会再响
+    func testNextFireDateIsNilAfterItPassed() {
+        let reminder = once(day: "2026-09-27", hour: 15, minute: 0)
+
+        XCTAssertNil(ReminderScheduler.nextFireDate(after: at(27, 15, 1), reminder: reminder, calendar: calendar))
+        XCTAssertNil(ReminderScheduler.nextFireDate(after: at(30, 0, 0), reminder: reminder, calendar: calendar))
+    }
+
+    /// 一次性的排在很远的将来也要算得出来（不受「每 N 天」那个搜索窗口影响）
+    func testFarFutureOnceStillSchedules() {
+        let reminder = once(day: "2027-09-27", hour: 15, minute: 0)
+
+        XCTAssertEqual(
+            ReminderScheduler.nextFireDate(after: at(26, 0, 0), reminder: reminder, calendar: calendar),
+            calendar.date(from: DateComponents(year: 2027, month: 9, day: 27, hour: 15, minute: 0))!
+        )
+    }
+
+    /// 勾了「跳过节假日」而那天正好是休息日 → 不响，也不顺延（一次性没有「下一次」）
+    func testSkipHolidaysSuppressesTheOnlyChance() {
+        let reminder = once(day: "2026-10-01", hour: 9, minute: 0)
+        var skip = reminder
+        skip.skipHolidays = true
+
+        XCTAssertNil(ReminderScheduler.nextFireDate(
+            after: at(26, 0, 0),
+            reminder: skip,
+            holidays: ["2026-10-01": "国庆节"],
+            calendar: calendar
+        ), "那天是节假日，一次性提醒就直接跳过（没有顺延的概念）")
+    }
+
+    func testSummaryShowsTheDate() {
+        XCTAssertEqual(once(day: "2026-09-27", hour: 15, minute: 0).summary, "2026-09-27 15:00:00 · 交表")
+    }
+
+    /// 日期工具本身
+    func testDayStringRoundTrip() {
+        let date = at(27, 15, 0)
+
+        XCTAssertEqual(ReminderScheduler.anchorDayString(from: date, calendar: calendar), "2026-09-27")
+        XCTAssertEqual(
+            ReminderScheduler.date(onDay: "2026-09-27", hour: 15, minute: 0, second: 0, calendar: calendar),
+            date
+        )
+        XCTAssertNil(ReminderScheduler.date(onDay: "", hour: 1, minute: 0, second: 0, calendar: calendar))
+        XCTAssertNil(ReminderScheduler.date(onDay: "不是日期", hour: 1, minute: 0, second: 0, calendar: calendar))
+    }
+}
