@@ -1426,6 +1426,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showHoverPanel(below: buttonRect)
         } else if !isOverButton && !isOverPanel {
             hoverPanel?.dismiss()
+        } else {
+            hoverPanel?.updateHoveredQuote(at: mouseLocation)
         }
     }
 
@@ -1593,6 +1595,16 @@ enum HoverPanelInteraction {
             width: right - left, height: button.minY - panel.maxY
         ).contains(point)
     }
+
+    static func quoteCode(
+        at point: NSPoint,
+        titles: [String: NSRect],
+        prices: [String: NSRect]
+    ) -> String? {
+        for (code, frame) in titles where frame.contains(point) { return code }
+        for (code, frame) in prices where frame.contains(point) { return code }
+        return nil
+    }
 }
 
 struct HoverPanelData {
@@ -1616,6 +1628,9 @@ struct HoverPanelData {
 final class HoverPanel {
     private var window: NSPanel?
     private var buttonRect: NSRect = .zero
+    private var displayedStocks: [String: StockRow] = [:]
+    private var displayedHolidays: [String: String] = [:]
+    private var hoveredQuoteCode: String?
 
     // Mutable labels for live updates
     private var priceLabel: NSTextField?
@@ -1874,6 +1889,7 @@ final class HoverPanel {
             ("updateTime", "更新时间", data.updateTime),
             ("refreshInterval", "刷新频率", data.refreshInterval),
             ("alert", "价格提醒", data.alertInfo),
+            ("quoteTime", "报价时间", "悬停股票名称或现价查看"),
         ]
 
         var infoLabelPairs: [(NSTextField, NSTextField)] = []
@@ -2050,9 +2066,34 @@ final class HoverPanel {
         }
 
         self.window = panel
+        displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
+        displayedHolidays = data.holidays
+    }
+
+    func updateHoveredQuote(at screenPoint: NSPoint) {
+        guard let window, let content = window.contentView else { return }
+        let inWindow = window.convertFromScreen(NSRect(origin: screenPoint, size: .zero)).origin
+        let point = content.convert(inWindow, from: nil)
+        hoveredQuoteCode = HoverPanelInteraction.quoteCode(
+            at: point,
+            titles: stockTitleLabels.mapValues(\.frame),
+            prices: stockValueLabels.mapValues(\.frame)
+        )
+        refreshHoveredQuote()
+    }
+
+    private func refreshHoveredQuote() {
+        guard let label = infoValueLabels["quoteTime"] else { return }
+        let text = hoveredQuoteCode.flatMap { displayedStocks[$0] }
+            .map { $0.quoteTimeSummary(at: Date(), holidays: displayedHolidays) }
+            ?? "悬停股票名称或现价查看"
+        if label.stringValue != text { label.stringValue = text }
     }
 
     func updateContent(data: HoverPanelData) {
+        displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
+        displayedHolidays = data.holidays
+        refreshHoveredQuote()
         priceLabel?.stringValue = "\u{00A5} " + data.price
         changeLabel?.stringValue = "\(data.changeAmount)  \(data.changePercent)"
         changeLabel?.textColor = changeColor(for: data.isNegative)
@@ -2088,12 +2129,21 @@ final class HoverPanel {
             let quote = row.quote
             let now = Date()
             let tooltip = row.quoteTooltip(at: now, holidays: data.holidays)
-            stockValueLabels[quote.code]?.stringValue =
-                formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
+            let priceText = formatValueWithPercent(price: quote.price, raisePercent: quote.raisePercent)
+            if stockValueLabels[quote.code]?.stringValue != priceText {
+                stockValueLabels[quote.code]?.stringValue = priceText
+            }
             stockValueLabels[quote.code]?.textColor = raisedColor(quote.raise, fallback: fallback)
-            stockValueLabels[quote.code]?.toolTip = tooltip
-            stockTitleLabels[quote.code]?.stringValue = row.displayName(at: now, holidays: data.holidays)
-            stockTitleLabels[quote.code]?.toolTip = tooltip
+            if stockValueLabels[quote.code]?.toolTip != tooltip {
+                stockValueLabels[quote.code]?.toolTip = tooltip
+            }
+            let titleText = row.displayName(at: now, holidays: data.holidays)
+            if stockTitleLabels[quote.code]?.stringValue != titleText {
+                stockTitleLabels[quote.code]?.stringValue = titleText
+            }
+            if stockTitleLabels[quote.code]?.toolTip != tooltip {
+                stockTitleLabels[quote.code]?.toolTip = tooltip
+            }
 
             stockVolumeLabels[quote.code]?.stringValue = StockVolume.volumeText(row.volumeRatio)
             stockVolumeLabels[quote.code]?.textColor =
@@ -2112,6 +2162,9 @@ final class HoverPanel {
     func dismiss() {
         guard let window = self.window else { return }
         self.window = nil
+        displayedStocks.removeAll()
+        displayedHolidays.removeAll()
+        hoveredQuoteCode = nil
         priceLabel = nil
         changeLabel = nil
         infoValueLabels.removeAll()

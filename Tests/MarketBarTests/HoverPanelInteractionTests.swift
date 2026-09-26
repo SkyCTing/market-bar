@@ -35,4 +35,20 @@ final class HoverPanelInteractionTests: XCTestCase {
             NSPoint(x: 430, y: 798), button: button, panel: displaced
         ))
     }
+
+    func testOnlyStockNameAndPriceRevealTheirQuoteTime() {
+        let titles = ["usAAPL": NSRect(x: 20, y: 120, width: 130, height: 20)]
+        let prices = ["usAAPL": NSRect(x: 460, y: 120, width: 96, height: 20)]
+        XCTAssertEqual(
+            HoverPanelInteraction.quoteCode(at: NSPoint(x: 30, y: 130), titles: titles, prices: prices),
+            "usAAPL"
+        )
+        XCTAssertEqual(
+            HoverPanelInteraction.quoteCode(at: NSPoint(x: 500, y: 130), titles: titles, prices: prices),
+            "usAAPL"
+        )
+        XCTAssertNil(HoverPanelInteraction.quoteCode(
+            at: NSPoint(x: 200, y: 130), titles: titles, prices: prices
+        ))
+    }
 }
