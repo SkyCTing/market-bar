@@ -578,6 +578,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var unreadCounts = UnreadBadge.Counts()
     private var lastUnreadFetch = Date.distantPast
     private var unreadFailures = 0
+    private var accessibilityRestartTimer: Timer?
+    private var accessibilityRestartPolicy = AccessibilityRestartPolicy()
     /// 未读不必每秒看一次；而且 `fetch()` 是主线程同步 AX IPC，
     /// 实测均值 1.2ms、最坏 42ms —— 微信卡住时会连带拖住金价刷新和动画
     private static let unreadFetchInterval: TimeInterval = 3
@@ -607,6 +609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusTitle()
         rebuildMenu()
         restartTimer()
+        startAccessibilityRestartMonitoring()
         setupHoverTracking()
         floatingCharacterController.setSize(floatingCharacterSize)
         floatingCharacterController.update(
@@ -659,6 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
     func applicationWillTerminate(_ notification: Notification) {
+        accessibilityRestartTimer?.invalidate()
         chatController?.shutdown()
     }
 
@@ -783,6 +787,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         unreadCounts = displayed
         floatingCharacterController.updateUnread(main: displayed.weChat, second: displayed.weChatSecond)
+    }
+
+    private func startAccessibilityRestartMonitoring() {
+        _ = accessibilityRestartPolicy.shouldRestart(
+            trusted: UnreadBadge.isAccessibilityAuthorized(), canRestart: false
+        )
+        let timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkAccessibilityRestart() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        accessibilityRestartTimer = timer
+    }
+
+    private func checkAccessibilityRestart() {
+        let canRestart = !isMenuOpen
+            && NSApp.modalWindow == nil
+            && chatController?.isVisible != true
+            && watchlistSettings?.isVisible != true
+            && reminderList?.isVisible != true
+        guard accessibilityRestartPolicy.shouldRestart(
+            trusted: UnreadBadge.isAccessibilityAuthorized(), canRestart: canRestart
+        ) else { return }
+
+        accessibilityRestartTimer?.invalidate()
+        accessibilityRestartTimer = nil
+        AccessibilityRestart.relaunch { message in
+            NSLog("MarketBar: automatic restart after accessibility authorization failed: %@", message)
+            let alert = NSAlert()
+            alert.messageText = "辅助功能已授权，但自动重启失败"
+            alert.informativeText = "\(message)\n请退出 MarketBar 后重新打开，授权才能可靠生效。"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
+        }
     }
 
     private func updateStatusTitle() {

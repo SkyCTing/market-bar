@@ -39,6 +39,10 @@ enum UnreadBadge {
     static let mainBundleID = "com.tencent.xinWeChat"
     static let secondBundleID = "com.tencent.xinWeChatSecond"
 
+    static func isAccessibilityAuthorized() -> Bool {
+        AXIsProcessTrusted()
+    }
+
     /// 请求「辅助功能」权限。
     ///
     /// 两条一起走：系统那句「MarketBar 想控制这台电脑」每次启动只会弹一次，
