@@ -28,6 +28,8 @@ final class ReminderDialogView: NSView {
     private let monthDayPopup = NSPopUpButton()
     private let dayIntervalLabel = NSTextField(labelWithString: "天数")
     private let dayIntervalField = NSTextField()
+    /// 「只提醒一次」时选哪一天
+    private let onceDatePicker = NSDatePicker()
     private let skipHolidaysCheckbox = NSButton(
         checkboxWithTitle: "智能跳过节假日（调休上班日照常提醒）",
         target: nil,
@@ -66,7 +68,16 @@ final class ReminderDialogView: NSView {
     /// 正在编辑的那条本来就是倒计时 —— 「从现在重新计时」只在这种情况下出现
     private let editingCountdown: Bool
 
-    private static let repeatTitles = ["每天", "每周", "每月", "每 N 天"]
+    /// 「只提醒一次」排最后：它和前三项是并列的第四种选择
+    /// yyyy-MM-dd，固定北京时间（和 Reminder 那边的口径一致）
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TradingSession.timeZone
+        return formatter
+    }()
+
+    private static let repeatTitles = ["每天", "每周", "每月", "每 N 天", "只提醒一次"]
 
     init(reminder: Reminder?) {
         editingCountdown = reminder?.kind == .countdown
@@ -145,6 +156,12 @@ final class ReminderDialogView: NSView {
         dayIntervalField.stringValue = "2"
         addSubview(dayIntervalField)
 
+        onceDatePicker.datePickerStyle = .textFieldAndStepper
+        onceDatePicker.datePickerElements = [.yearMonthDay]
+        onceDatePicker.datePickerMode = .single
+        onceDatePicker.frame = NSRect(x: 166, y: 118, width: 150, height: 26)
+        addSubview(onceDatePicker)
+
         repeatCountdownCheckbox.frame = NSRect(x: 64, y: 122, width: 308, height: 20)
         addSubview(repeatCountdownCheckbox)
 
@@ -195,6 +212,12 @@ final class ReminderDialogView: NSView {
         case .everyDays(let interval):
             repeatPopup.selectItem(at: 3)
             dayIntervalField.stringValue = "\(max(1, interval))"
+        case .once:
+            repeatPopup.selectItem(at: 4)
+            // 存的是 yyyy-MM-dd，回填到日期选择器
+            if let day = reminder?.anchorDay, let parsed = Self.dayFormatter.date(from: day) {
+                onceDatePicker.dateValue = parsed
+            }
         default:
             repeatPopup.selectItem(at: 0)
         }
@@ -254,6 +277,11 @@ final class ReminderDialogView: NSView {
         case 1: result.repeatRule = .weekly(weekday: weekdayPopup.indexOfSelectedItem + 1)
         case 2: result.repeatRule = .monthly(day: monthDayPopup.indexOfSelectedItem + 1)
         case 3: result.repeatRule = .everyDays(interval: max(1, Int(dayIntervalField.stringValue) ?? 2))
+        case 4:
+            result.repeatRule = .once
+            // 一次性提醒的「哪一天」就存在 anchorDay 里，每次都按界面上的日期覆盖
+            result.anchorDay = Self.dayFormatter.string(from: onceDatePicker.dateValue)
+            return result
         default: result.repeatRule = .daily
         }
 
@@ -309,6 +337,7 @@ final class ReminderDialogView: NSView {
         monthDayPopup.isHidden = isCountdown || repeatIndex != 2
         dayIntervalLabel.isHidden = isCountdown || repeatIndex != 3
         dayIntervalField.isHidden = isCountdown || repeatIndex != 3
+        onceDatePicker.isHidden = isCountdown || repeatIndex != 4
         skipHolidaysCheckbox.isHidden = isCountdown
 
         for view in [hoursField, minutesField, secondsField, hoursUnit, minutesUnit, secondsUnit] as [NSView] {
