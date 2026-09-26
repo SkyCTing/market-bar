@@ -38,24 +38,23 @@ enum UnreadBadge {
 
     static let mainBundleID = "com.tencent.xinWeChat"
     static let secondBundleID = "com.tencent.xinWeChatSecond"
+    static let accessibilitySettingsURL = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    )!
 
     static func isAccessibilityAuthorized() -> Bool {
         AXIsProcessTrusted()
     }
 
-    /// 请求「辅助功能」权限。
-    ///
-    /// 两条一起走：系统那句「MarketBar 想控制这台电脑」每次启动只会弹一次，
-    /// 之后系统会静默忽略；所以再直接把设置面板打开到「辅助功能」那一页兜底。
+    /// 直接打开系统设置里的授权列表，不再额外弹出系统的授权提示。
     @MainActor
     static func requestAccessibilityPermission() {
-        // 用字面量而不是 kAXTrustedCheckOptionPrompt：那个常量在 Swift 6 下是
-        // 非并发安全的全局 var，取用会编译报错。它的值就是这个字符串
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+        if !NSWorkspace.shared.open(accessibilitySettingsURL) {
+            let alert = NSAlert()
+            alert.messageText = "没能打开辅助功能设置"
+            alert.informativeText = "请在系统设置 → 隐私与安全性 → 辅助功能中授权 MarketBar。"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
         }
     }
 

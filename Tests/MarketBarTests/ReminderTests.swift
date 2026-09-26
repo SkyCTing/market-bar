@@ -704,6 +704,13 @@ final class ReminderLargeIntervalTests: XCTestCase {
 // MARK: - 未读读不到 vs 没有未读
 
 final class UnreadStateTests: XCTestCase {
+    func testAccessibilityLinkOpensSettingsDirectly() {
+        XCTAssertEqual(
+            UnreadBadge.accessibilitySettingsURL.absoluteString,
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        )
+    }
+
     func testDisplaysFetchedWhenSomethingWasRead() {
         let fetched = UnreadBadge.Counts(weChat: .count(3), weChatSecond: .none)
 
