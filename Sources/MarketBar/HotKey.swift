@@ -29,7 +29,7 @@ struct KeyCombo: Codable, Equatable, Sendable {
     }
 
     func matches(_ event: NSEvent) -> Bool {
-        guard event.keyCode == keyCode else { return false }
+        guard !event.isARepeat, event.keyCode == keyCode else { return false }
         return Self.normalize(event.modifierFlags).rawValue == modifiers
     }
 
@@ -53,6 +53,23 @@ struct KeyCombo: Codable, Equatable, Sendable {
     )
 }
 
+enum HotKeyPreferences {
+    static func load(from defaults: UserDefaults, key: String, fallback: KeyCombo?) -> KeyCombo? {
+        guard let data = defaults.data(forKey: key) else { return fallback }
+        do {
+            return try JSONDecoder().decode(KeyCombo?.self, from: data)
+        } catch {
+            NSLog("MarketBar: invalid hotkey setting for %@: %@", key, error.localizedDescription)
+            return fallback
+        }
+    }
+
+    static func conflicts(panel: KeyCombo?, character: KeyCombo?) -> Bool {
+        guard let panel, let character else { return false }
+        return panel.keyCode == character.keyCode && panel.modifiers == character.modifiers
+    }
+}
+
 /// 注册若干组快捷键。
 ///
 /// 用 `NSEvent` 监视器而不是 Carbon 热键：代码少得多，而本 app 本来就需要
@@ -68,6 +85,10 @@ final class HotKeyCenter {
     /// 换绑（配置改了之后重新调用即可）
     func bind(_ bindings: [(combo: KeyCombo, action: () -> Void)]) {
         self.bindings = bindings
+        guard !bindings.isEmpty else {
+            stop()
+            return
+        }
         installMonitorsIfNeeded()
     }
 

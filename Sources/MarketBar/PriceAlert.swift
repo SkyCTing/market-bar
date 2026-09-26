@@ -135,15 +135,26 @@ extension PriceAlert.Direction: Codable {
     /// 存成 `"above"` / `"below"` / `"move:2.0:5"`。
     /// ⚠️ 老数据只有前两个裸字符串，必须继续认
     init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
         if raw.hasPrefix("move:") {
             let parts = raw.dropFirst("move:".count).split(separator: ":")
-            if parts.count == 2, let percent = Double(parts[0]), let minutes = Int(parts[1]) {
+            if parts.count == 2,
+               let percent = Double(parts[0]), percent.isFinite, percent > 0, percent <= 100,
+               let minutes = Int(parts[1]), (1...120).contains(minutes) {
                 self = .movesWithin(percent: percent, minutes: minutes)
                 return
             }
         }
-        self = raw == "below" ? .below : .above
+        switch raw {
+        case "above": self = .above
+        case "below": self = .below
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unrecognized price alert direction: \(raw)"
+            )
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -159,12 +170,24 @@ extension PriceAlert.Direction: Codable {
 extension PriceAlert.Target: Codable {
     /// 存成 `"gold"` / `"stock:sh600036"` —— 比嵌套对象紧凑，读起来也直白
     init(from decoder: Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
         if raw.hasPrefix("stock:") {
-            self = .stock(code: String(raw.dropFirst("stock:".count)))
-        } else {
-            // 认不出来的一律当金价：宁可盯错标的，也别让整条提醒解码失败
+            let code = String(raw.dropFirst("stock:".count))
+            guard WatchlistDraft.isValidCode(code) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Invalid price alert stock code"
+                )
+            }
+            self = .stock(code: code)
+        } else if raw == "gold" {
             self = .gold
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unrecognized price alert target"
+            )
         }
     }
 
@@ -237,6 +260,50 @@ enum PriceAlertEvaluator {
         guard !alert.isTriggered else { return (false, updated) }
         updated.isTriggered = true
         return (true, updated)
+    }
+}
+
+struct PriceHistory {
+    struct Sample {
+        let date: Date
+        let price: Double
+    }
+
+    private var entries: [String: [Sample]] = [:]
+
+    mutating func record(
+        price: Double,
+        for key: String,
+        at now: Date,
+        window: TimeInterval,
+        sampleInterval: TimeInterval = 5
+    ) {
+        guard price.isFinite, price > 0, window > 0 else { return }
+        var samples = entries[key] ?? []
+        if let last = samples.last, last.date > now { samples.removeAll() }
+
+        let cutoff = now.addingTimeInterval(-window)
+        if let anchor = samples.lastIndex(where: { $0.date < cutoff }), anchor > 0 {
+            samples.removeFirst(anchor)
+        }
+        if let last = samples.last, now.timeIntervalSince(last.date) < sampleInterval {
+            entries[key] = samples
+            return
+        }
+        samples.append(Sample(date: now, price: price))
+        entries[key] = samples
+    }
+
+    func referencePrice(for key: String, minutes: Int, at now: Date) -> Double? {
+        guard (1...120).contains(minutes) else { return nil }
+        let wanted = now.addingTimeInterval(-TimeInterval(minutes * 60))
+        guard let sample = entries[key]?.last(where: { $0.date <= wanted }),
+              wanted.timeIntervalSince(sample.date) <= 15 else { return nil }
+        return sample.price
+    }
+
+    mutating func retain(keys: Set<String>) {
+        entries = entries.filter { keys.contains($0.key) }
     }
 }
 

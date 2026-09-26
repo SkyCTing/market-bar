@@ -61,6 +61,8 @@ final class StockHoldingsTests: XCTestCase {
         XCTAssertEqual(HoldingFormat.profitLossText(.nan), "0")
         XCTAssertEqual(HoldingFormat.profitLossText(.infinity), "0")
         XCTAssertEqual(HoldingFormat.profitLossText(-.infinity), "0")
+        XCTAssertEqual(HoldingFormat.profitLossText(Double(Int.max)), "0")
+        XCTAssertEqual(HoldingFormat.amount(Double(Int.max)), "—")
     }
 
     // MARK: - 持仓查找

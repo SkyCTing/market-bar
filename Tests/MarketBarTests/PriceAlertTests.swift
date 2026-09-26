@@ -248,6 +248,100 @@ final class PriceAlertEvaluatorTests: XCTestCase {
         XCTAssertTrue(alert.repeats, "默认要重复提醒")
         XCTAssertFalse(alert.isTriggered)
     }
+
+    func testUnknownOrInvalidMovementDirectionDoesNotBecomeAnAboveAlert() throws {
+        for raw in ["move:NaN:5", "move:-2:5", "move:2:0", "move:2:121", "move:garbage:5", "future:2:5"] {
+            let json = """
+            {"target":"gold","direction":"\(raw)","threshold":2}
+            """
+            XCTAssertThrowsError(try JSONDecoder().decode(PriceAlert.self, from: Data(json.utf8)), raw)
+        }
+        let legacy = #"{"target":"gold","direction":"below","threshold":900}"#
+        XCTAssertEqual(
+            try JSONDecoder().decode(PriceAlert.self, from: Data(legacy.utf8)).direction,
+            .below
+        )
+    }
+
+    func testUnknownTargetCannotSilentlyBecomeGold() {
+        for raw in ["platinum", "stock:", "stock:usAAPL&x=1"] {
+            let json = """
+            {"target":"\(raw)","direction":"above","threshold":900}
+            """
+            XCTAssertThrowsError(try JSONDecoder().decode(PriceAlert.self, from: Data(json.utf8)), raw)
+        }
+    }
+}
+
+final class PriceHistoryTests: XCTestCase {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testFiveSecondSamplesKeepAReferenceAcrossEverySecondOfTheWindow() {
+        var history = PriceHistory()
+        for second in stride(from: 0, through: 360, by: 5) {
+            history.record(price: 100 + Double(second), for: "sh600036",
+                           at: start.addingTimeInterval(Double(second)), window: 300)
+            if second >= 300 {
+                for offset in 0..<5 {
+                    let now = start.addingTimeInterval(Double(second + offset))
+                    XCTAssertNotNil(history.referencePrice(for: "sh600036", minutes: 5, at: now),
+                                    "丢了窗口左边界前的采样：\(second + offset) 秒")
+                }
+            }
+        }
+        XCTAssertNil(history.referencePrice(for: "sh600036", minutes: 5,
+                                            at: start.addingTimeInterval(299)))
+    }
+
+    func testGapTooLongDoesNotPretendAnOldSampleIsFiveMinutesAgo() {
+        var history = PriceHistory()
+        history.record(price: 100, for: "sh600036", at: start, window: 300)
+        history.record(price: 130, for: "sh600036", at: start.addingTimeInterval(400), window: 300)
+        XCTAssertNil(history.referencePrice(for: "sh600036", minutes: 5,
+                                            at: start.addingTimeInterval(400)))
+    }
+
+    func testReferenceUsesLastSampleNotAFutureOne() {
+        var history = PriceHistory()
+        history.record(price: 100, for: "sh600036", at: start, window: 60)
+        history.record(price: 120, for: "sh600036", at: start.addingTimeInterval(5), window: 60)
+        XCTAssertEqual(history.referencePrice(for: "sh600036", minutes: 1,
+                                               at: start.addingTimeInterval(63)), 100)
+        XCTAssertNil(history.referencePrice(for: "sh600036", minutes: 121,
+                                            at: start.addingTimeInterval(121 * 60)))
+    }
+
+    func testMovementCanFireBetweenFiveSecondSamplingBoundaries() {
+        var history = PriceHistory()
+        for second in stride(from: 0, through: 305, by: 5) {
+            history.record(
+                price: second >= 305 ? 103 : 100,
+                for: "sh600036",
+                at: start.addingTimeInterval(Double(second)),
+                window: 300
+            )
+        }
+        let now = start.addingTimeInterval(307)
+        let reference = history.referencePrice(for: "sh600036", minutes: 5, at: now)
+        let alert = PriceAlert(
+            target: .stock(code: "sh600036"),
+            direction: .movesWithin(percent: 2, minutes: 5),
+            threshold: 2
+        )
+        XCTAssertEqual(reference, 100)
+        XCTAssertTrue(PriceAlertEvaluator.evaluate(alert, price: 103, referencePrice: reference).fired)
+    }
+
+    func testClearRemovedStockButKeepGoldHistory() {
+        var history = PriceHistory()
+        history.record(price: 100, for: "sh600036", at: start, window: 300)
+        history.record(price: 900, for: "__gold__", at: start, window: 300)
+        history.retain(keys: ["__gold__"])
+        XCTAssertNil(history.referencePrice(for: "sh600036", minutes: 1,
+                                            at: start.addingTimeInterval(60)))
+        XCTAssertEqual(history.referencePrice(for: "__gold__", minutes: 1,
+                                             at: start.addingTimeInterval(60)), 900)
+    }
 }
 
 @MainActor

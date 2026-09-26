@@ -118,6 +118,8 @@ final class MarketSnapshotHoldingsTests: XCTestCase {
         )
 
         XCTAssertTrue(text.contains("以下是我当前的持仓"))
+        XCTAssertTrue(text.contains("这份草稿包含本地持仓数据"))
+        XCTAssertFalse(text.contains("这份草稿不包含持仓股数"))
         XCTAssertTrue(text.contains("1,500 股"))
         XCTAssertTrue(text.contains("成本 38.123"))
         // (40 - 38.123) × 1500 = 2815.5 → 取整 2816… 实际按四舍五入
@@ -148,5 +150,6 @@ final class MarketSnapshotHoldingsTests: XCTestCase {
         )
 
         XCTAssertFalse(text.contains("以下是我当前的持仓"))
+        XCTAssertTrue(text.contains("没有可附加的持仓记录"))
     }
 }

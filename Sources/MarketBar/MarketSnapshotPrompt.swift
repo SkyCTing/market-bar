@@ -72,10 +72,14 @@ enum MarketSnapshotPrompt {
                 for quote in held {
                     lines.append(holdingLine(quote))
                 }
+            } else {
+                lines.append("当前自选清单里没有可附加的持仓记录。")
             }
         }
         if limited.isEmpty { lines.append("自选行情尚未取得有效报价。") }
-        lines.append("这份草稿不包含持仓股数、成本或盈亏；只有我点击「发送」才会提交。")
+        lines.append(includesHoldings
+            ? "这份草稿包含本地持仓数据；只有我点击「发送」才会提交。"
+            : "这份草稿不包含持仓股数、成本或盈亏；只有我点击「发送」才会提交。")
         return lines.joined(separator: "\n")
     }
 }

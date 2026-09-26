@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="MarketBar"
 BUNDLE_ID="com.marketbar.app"
-VERSION="1.0.10"
+VERSION="1.0.11"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${PROJECT_DIR}/.build"
 DIST_DIR="${PROJECT_DIR}/dist"
