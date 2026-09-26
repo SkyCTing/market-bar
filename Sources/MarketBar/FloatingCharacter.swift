@@ -345,7 +345,12 @@ struct FloatingCharacterSpeechBubbleLayout {
     static let spacing: CGFloat = 6
 
     /// `bottomInset`：头顶被倒计时占了时要往上让多少（见 FloatingCharacterCountdownLayout）
-    static func frame(anchor: NSRect, visibleFrame: NSRect, bottomInset: CGFloat = 0) -> (frame: NSRect, pointsDown: Bool) {
+    static func frame(
+        anchor: NSRect,
+        visibleFrame: NSRect,
+        bottomInset: CGFloat = 0,
+        size: NSSize = size
+    ) -> (frame: NSRect, pointsDown: Bool) {
         var origin = NSPoint(
             x: anchor.midX - size.width / 2,
             y: anchor.maxY + spacing + bottomInset
@@ -623,6 +628,8 @@ final class FloatingCharacterController: NSObject {
 
     /// 右键人物（参数是屏幕坐标下的 frame）。控制器只负责转发，不认识 AppDelegate 或聊天。
     var onRightClick: ((NSRect) -> Void)?
+    /// 单击人物时先尝试确认当前提醒；没有待确认提醒时保留原来的动作。
+    var onReminderClick: (() -> Bool)?
 
     /// 拖到屏幕边缘时直接收起（而不是贴边偷看）。默认关，由 AppDelegate 注入。
     var hidesAtEdge = false
@@ -686,7 +693,12 @@ final class FloatingCharacterController: NSObject {
             self?.preparePointerInteraction()
         }
         characterView.onClick = { [weak self] in
-            self?.handleClick()
+            guard let self else { return }
+            if self.onReminderClick?() == true {
+                self.dismissSpeechBubble()
+            } else {
+                self.handleClick()
+            }
         }
         characterView.onRightClick = { [weak self] anchor in
             self?.onRightClick?(anchor)
@@ -1058,15 +1070,24 @@ final class FloatingCharacterController: NSObject {
     }
 
     /// 让人物说一句**指定的话**（提醒用；showSpeech 的文案是从目录里按触发类型取的）
-    func say(_ text: String, duration: TimeInterval = 10) {
+    func say(
+        _ text: String,
+        duration: TimeInterval = 10,
+        onAcknowledge: (() -> Bool)? = nil
+    ) {
         guard isVisible,
               let targetScreen = panel.screen ?? screen(containing: panel.frame) ?? NSScreen.main else { return }
         speechBubbleController.show(
             text: text,
             anchor: panel.frame,
             visibleFrame: targetScreen.visibleFrame,
-            duration: duration
+            duration: duration,
+            onAcknowledge: onAcknowledge
         )
+    }
+
+    func dismissSpeechBubble() {
+        speechBubbleController.dismiss()
     }
 
     private func showSpeech(
@@ -1843,11 +1864,19 @@ final class FloatingCharacterSpeechBubbleController {
         text: String,
         anchor: NSRect,
         visibleFrame: NSRect,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        onAcknowledge: (() -> Bool)? = nil
     ) {
         dismissTimer?.invalidate()
         dismissTimer = nil
         bubbleView.text = text
+        bubbleView.showsAcknowledgeHint = onAcknowledge != nil
+        bubbleView.onClick = onAcknowledge.map { acknowledge in
+            { [weak self] in
+                if acknowledge() { self?.dismiss() }
+            }
+        }
+        panel.ignoresMouseEvents = onAcknowledge == nil
         applyLayout(anchor: anchor, visibleFrame: visibleFrame)
         panel.orderFrontRegardless()
 
@@ -1868,13 +1897,19 @@ final class FloatingCharacterSpeechBubbleController {
         dismissTimer?.invalidate()
         dismissTimer = nil
         panel.orderOut(nil)
+        panel.ignoresMouseEvents = true
+        bubbleView.onClick = nil
+        bubbleView.showsAcknowledgeHint = false
     }
 
     private func applyLayout(anchor: NSRect, visibleFrame: NSRect) {
         let layout = FloatingCharacterSpeechBubbleLayout.frame(
             anchor: anchor,
             visibleFrame: visibleFrame,
-            bottomInset: bottomInset
+            bottomInset: bottomInset,
+            size: bubbleView.showsAcknowledgeHint
+                ? NSSize(width: FloatingCharacterSpeechBubbleLayout.size.width, height: 82)
+                : FloatingCharacterSpeechBubbleLayout.size
         )
         bubbleView.pointsDown = layout.pointsDown
         panel.setFrame(layout.frame, display: panel.isVisible)
@@ -1884,6 +1919,16 @@ final class FloatingCharacterSpeechBubbleController {
 @MainActor
 final class FloatingCharacterSpeechBubbleView: NSView {
     private let label = NSTextField(wrappingLabelWithString: "")
+    private let hint = NSTextField(labelWithString: "点击气泡或宠物确认")
+    var onClick: (() -> Void)? {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
+    var showsAcknowledgeHint = false {
+        didSet {
+            hint.isHidden = !showsAcknowledgeHint
+            needsLayout = true
+        }
+    }
 
     var text: String = "" {
         didSet { label.stringValue = text }
@@ -1905,6 +1950,11 @@ final class FloatingCharacterSpeechBubbleView: NSView {
         label.maximumNumberOfLines = 2
         label.lineBreakMode = .byWordWrapping
         addSubview(label)
+        hint.font = .systemFont(ofSize: 10, weight: .medium)
+        hint.textColor = NSColor(calibratedRed: 0.4, green: 0.27, blue: 0.5, alpha: 1)
+        hint.alignment = .center
+        hint.isHidden = true
+        addSubview(hint)
     }
 
     @available(*, unavailable)
@@ -1915,7 +1965,27 @@ final class FloatingCharacterSpeechBubbleView: NSView {
     override func layout() {
         super.layout()
         let body = bubbleBodyRect.insetBy(dx: 12, dy: 7)
-        label.frame = body
+        if showsAcknowledgeHint {
+            label.frame = NSRect(x: body.minX, y: body.minY + 15, width: body.width, height: body.height - 15)
+            hint.frame = NSRect(x: body.minX, y: body.minY, width: body.width, height: 13)
+        } else {
+            label.frame = body
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        onClick == nil ? super.hitTest(point) : (bounds.contains(convert(point, from: superview)) ? self : nil)
+    }
+
+    override func resetCursorRects() {
+        if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onClick?()
     }
 
     override func draw(_ dirtyRect: NSRect) {

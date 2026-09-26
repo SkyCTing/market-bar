@@ -206,7 +206,8 @@ final class ReminderCenter {
         )
     }
 
-    func acknowledge() {
-        presenter.cancelAll()
+    @discardableResult
+    func acknowledge() -> Bool {
+        presenter.acknowledgeVisibleBubble()
     }
 }
