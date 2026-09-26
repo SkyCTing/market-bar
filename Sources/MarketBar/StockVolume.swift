@@ -216,6 +216,14 @@ struct StockRow: Sendable {
         return "\(quote.name) (\(quote.code))\n报价时间：\(time)（\(market.timeZoneName)）\n\(freshness.explanation)"
     }
 
+    func quoteTimeSummary(at date: Date, holidays: [String: String] = [:]) -> String {
+        guard let market = StockMarket.forCode(quote.code) else { return "\(quote.code) · 报价时间未知" }
+        let time = quote.quotedAt.map(market.formattedQuoteTime) ?? "时间未知"
+        let status = QuoteFreshness.evaluate(quote, at: date, holidays: holidays)
+        let suffix = status == .current ? "" : " · \(status.badge)"
+        return "\(quote.code) · \(time) \(market.timeZoneName)\(suffix)"
+    }
+
     /// 当日盈亏（标的当地币种）；无持仓 / 无行情 / 涨跌额异常时为 nil
     var profitLoss: Double? {
         guard showsProfitLoss else { return nil }

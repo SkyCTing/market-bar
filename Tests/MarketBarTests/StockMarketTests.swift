@@ -103,6 +103,10 @@ final class StockMarketTests: XCTestCase {
         XCTAssertTrue(row.quoteTooltip(at: time.addingTimeInterval(181)).contains(
             "报价时间：2026-07-01 10:01:00（纽约时间）"
         ))
+        XCTAssertEqual(
+            row.quoteTimeSummary(at: time.addingTimeInterval(181)),
+            "usAAPL · 2026-07-01 10:01:00 纽约时间 · 延迟"
+        )
     }
 
     func testMissingTimePriceAndHolidayAreNeverLabeledCurrent() {
@@ -112,6 +116,8 @@ final class StockMarketTests: XCTestCase {
             volume: 100, sessionDate: "2026-09-25"
         )
         XCTAssertEqual(QuoteFreshness.evaluate(noTime, at: active), .unknownTime)
+        XCTAssertTrue(StockRow(quote: noTime, volumeRatio: nil)
+            .quoteTimeSummary(at: active).contains("时间未知"))
         XCTAssertEqual(QuoteFreshness.evaluate(
             .placeholder(code: "sh600036", name: "招商银行"), at: active
         ), .unavailable)
