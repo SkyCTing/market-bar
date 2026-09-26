@@ -19,7 +19,7 @@ final class HoverPanelQuoteTimeTests: XCTestCase {
             alertInfo: "未设置", market: .empty,
             stocks: [StockRow(quote: quote, volumeRatio: nil)],
             summaries: [],
-            holidays: [:], unread: .init()
+            holidays: [:]
         )
         let screen = try XCTUnwrap(NSScreen.main)
         panel.show(below: NSRect(x: screen.frame.midX, y: screen.frame.maxY - 30, width: 60, height: 24), data: data)
@@ -63,7 +63,7 @@ final class HoverPanelQuoteTimeTests: XCTestCase {
             provider: "测试", price: "0", changeAmount: "0", changePercent: "0",
             isNegative: nil, updateTime: "09:00:00", refreshInterval: "1 秒",
             alertInfo: "未设置", market: .empty, stocks: rows, summaries: [],
-            holidays: [:], unread: .init()
+            holidays: [:]
         )
         let screen = try XCTUnwrap(NSScreen.main)
         let panel = HoverPanel()
@@ -99,7 +99,7 @@ final class HoverPanelQuoteTimeTests: XCTestCase {
                 provider: "测试", price: "0", changeAmount: "0", changePercent: "0",
                 isNegative: nil, updateTime: "09:00:00", refreshInterval: "1 秒",
                 alertInfo: "未设置", market: .empty, stocks: [], summaries: summaries,
-                holidays: [:], unread: .init()
+                holidays: [:]
             )
         }
         let original = HoldingSummary(

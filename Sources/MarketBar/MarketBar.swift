@@ -1694,8 +1694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             market: currentMarketData,
             stocks: stockRows,
             summaries: HoldingSummaryBuilder.summaries(stockRows),
-            holidays: holidays,
-            unread: unreadCounts
+            holidays: holidays
         )
     }
 
@@ -1843,7 +1842,6 @@ struct HoverPanelData {
     /// 分币种的持仓汇总（没有持仓时为空）
     let summaries: [HoldingSummary]
     let holidays: [String: String]
-    let unread: UnreadBadge.Counts
 }
 
 // MARK: - Hover Detail Panel
@@ -1865,8 +1863,6 @@ final class HoverPanel {
     private var stockTitleLabels: [String: NSTextField] = [:]
     private var stockVolumeLabels: [String: NSTextField] = [:]
     /// 左右两个未读徽标（左＝微信，右＝微信小号）
-    private var weChatBadge: UnreadCountBadgeView?
-    private var weChatSecondBadge: UnreadCountBadgeView?
     private var stockSharesLabels: [String: NSTextField] = [:]
     private var stockCostLabels: [String: NSTextField] = [:]
     private var stockFloatingLabels: [String: NSTextField] = [:]
@@ -2124,18 +2120,6 @@ final class HoverPanel {
             stockProfitLabels[quote.code] = profitLabel
         }
 
-        // --- 未读徽标（贴在面板左右上角）---
-        let leftBadge = UnreadCountBadgeView()
-        let rightBadge = UnreadCountBadgeView()
-        leftBadge.translatesAutoresizingMaskIntoConstraints = false
-        rightBadge.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(leftBadge)
-        container.addSubview(rightBadge)
-        weChatBadge = leftBadge
-        weChatSecondBadge = rightBadge
-        leftBadge.update(data.unread.weChat)
-        rightBadge.update(data.unread.weChatSecond)
-
         // --- Divider 2 ---
         let divider2 = makeDivider()
         container.addSubview(divider2)
@@ -2211,13 +2195,6 @@ final class HoverPanel {
         constraints.append(contentsOf: [
             stockSectionTitle.topAnchor.constraint(equalTo: prev, constant: 10),
             stockSectionTitle.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
-        ])
-
-        constraints.append(contentsOf: [
-            leftBadge.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: -6),
-            leftBadge.topAnchor.constraint(equalTo: container.topAnchor, constant: -6),
-            rightBadge.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: 6),
-            rightBadge.topAnchor.constraint(equalTo: container.topAnchor, constant: -6),
         ])
 
         prev = stockSectionTitle.bottomAnchor
@@ -2422,9 +2399,6 @@ final class HoverPanel {
         marketValueLabels["dxy"]?.stringValue = formatValueWithPercent(price: m.dollarIndex.price, raisePercent: m.dollarIndex.raisePercent)
         marketValueLabels["dxy"]?.textColor = raisedColor(m.dollarIndex.raise, fallback: fallback)
 
-        weChatBadge?.update(data.unread.weChat)
-        weChatSecondBadge?.update(data.unread.weChatSecond)
-
         for row in data.stocks {
             let quote = row.quote
             let now = Date()
@@ -2472,8 +2446,6 @@ final class HoverPanel {
         stockValueLabels.removeAll()
         stockTitleLabels.removeAll()
         stockVolumeLabels.removeAll()
-        weChatBadge = nil
-        weChatSecondBadge = nil
         stockSharesLabels.removeAll()
         stockCostLabels.removeAll()
         stockFloatingLabels.removeAll()
