@@ -90,6 +90,8 @@ final class ChatInputTextView: NSTextView {
     var onSend: (() -> Void)?
     /// 粘贴板里有图时走这条（不把图片当成附件名插进正文）
     var onPasteImage: ((Data) -> Void)?
+    /// 粘贴板上没有能认出来的图。给个反馈 —— 光「哔」一声用户不知道发生了什么
+    var onPasteWithoutImage: (() -> Void)?
     /// ⌘⌫ 清空已附的图
     var onClearAttachments: (() -> Void)?
 
@@ -100,7 +102,13 @@ final class ChatInputTextView: NSTextView {
             onPasteImage?(data)
             return
         }
+        // 粘贴板上没有我们认得的图（也可能只是一段文本要正常粘贴）：
+        // 先走默认粘贴，粘不出东西时再提示一句，免得用户只听到一声「哔」
+        let before = string
         super.paste(sender)
+        if string == before, NSPasteboard.general.types?.isEmpty == false {
+            onPasteWithoutImage?()
+        }
     }
 
     /// ⌘⌫ 清图；没有图时保持「删到行首」的原行为
@@ -244,6 +252,7 @@ final class ClaudeChatView: NSView {
     private func attachImage(_ data: Data) {
         guard let image = ChatImageAttachment.make(from: data) else {
             NSSound.beep()
+            setStatus("这张图转换失败（\(data.count) 字节），换一张试试")
             return
         }
         attachedImages.append(image)
@@ -352,6 +361,9 @@ final class ClaudeChatView: NSView {
         input.allowsUndo = true
         input.onSend = { [weak self] in self?.handleSend() }
         input.onPasteImage = { [weak self] data in self?.attachImage(data) }
+        input.onPasteWithoutImage = { [weak self] in
+            self?.setStatus("粘贴板上没有能识别的图片（图片数据 / 图片文件都试过了）")
+        }
         input.onClearAttachments = { [weak self] in self?.clearAttachmentsIfAny() }
         input.delegate = self
 
