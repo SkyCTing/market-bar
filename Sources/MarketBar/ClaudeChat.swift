@@ -53,20 +53,37 @@ enum ClaudeChatInvocation {
         sessionID: UUID,
         isResume: Bool,
         claudePath: URL,
-        workingDirectory: URL,
-        usesStreamInput: Bool = false
+        workingDirectory: URL
     ) -> ClaudeProcessSpec {
-        ClaudeProcessSpec(
+        spec(
+            message: ClaudeChatMessage(text: prompt),
+            sessionID: sessionID,
+            isResume: isResume,
+            claudePath: claudePath,
+            workingDirectory: workingDirectory
+        )
+    }
+
+    /// 带图的消息走这条：`usesStreamInput` 只看有没有图
+    static func spec(
+        message: ClaudeChatMessage,
+        sessionID: UUID,
+        isResume: Bool,
+        claudePath: URL,
+        workingDirectory: URL
+    ) -> ClaudeProcessSpec {
+        let usesStreamInput = !message.images.isEmpty
+        return ClaudeProcessSpec(
             executable: URL(fileURLWithPath: "/bin/zsh"),
             arguments: [ "-lic", shellCommand, shellArgumentZero, workingDirectory.path, claudePath.path ]
                 + arguments(
-                    prompt: prompt,
+                    prompt: message.text,
                     sessionID: sessionID,
                     isResume: isResume,
                     usesStreamInput: usesStreamInput
                 ),
             workingDirectory: workingDirectory,
-            stdin: usesStreamInput ? ClaudeChatMessage(text: prompt).streamJSONLine() : nil
+            stdin: usesStreamInput ? message.streamJSONLine() : nil
         )
     }
 

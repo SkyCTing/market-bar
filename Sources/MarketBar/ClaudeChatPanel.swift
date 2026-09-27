@@ -88,6 +88,29 @@ final class ChatTranscriptTextView: NSTextView {
 /// 输入框：Enter 发送、Shift+Enter 换行
 final class ChatInputTextView: NSTextView {
     var onSend: (() -> Void)?
+    /// 粘贴板里有图时走这条（不把图片当成附件名插进正文）
+    var onPasteImage: ((Data) -> Void)?
+    /// ⌘⌫ 清空已附的图
+    var onClearAttachments: (() -> Void)?
+
+    /// ⚠️ 粘贴图片要拦在 `paste` 上：默认行为会把图片存成附件、往正文里插一个文件名，
+    /// 那个名字对 CLI 毫无意义
+    override func paste(_ sender: Any?) {
+        if let data = ChatImageAttachment.imageData(from: .general) {
+            onPasteImage?(data)
+            return
+        }
+        super.paste(sender)
+    }
+
+    /// ⌘⌫ 清图；没有图时保持「删到行首」的原行为
+    override func deleteToBeginningOfLine(_ sender: Any?) {
+        if let onClearAttachments {
+            onClearAttachments()
+            return
+        }
+        super.deleteToBeginningOfLine(sender)
+    }
 
     /// 用 insertNewline 而不是 keyDown：中文输入法确认候选词时的回车会被输入法自己处理掉，
     /// 只有真正落到编辑命令上的回车才该触发发送。
@@ -104,7 +127,10 @@ final class ChatInputTextView: NSTextView {
 
 @MainActor
 final class ClaudeChatView: NSView {
-    var onSend: ((String) -> Void)?
+    /// 发送时把正文和已附的图一起交出去
+    var onSend: ((String, [ClaudeChatImage]) -> Void)?
+    /// 已附的图（粘贴进来的）。发送后清空
+    private(set) var attachedImages: [ClaudeChatImage] = []
     var onNewSession: (() -> Void)?
     var onEditSession: (() -> Void)?
     var onCancel: (() -> Void)?
@@ -212,6 +238,38 @@ final class ClaudeChatView: NSView {
         inputDidChange()
     }
 
+    // MARK: 图片
+
+    /// 粘贴进来的图：转成能发的附件。转不出来（不是图 / 格式不支持）就 beep
+    private func attachImage(_ data: Data) {
+        guard let image = ChatImageAttachment.make(from: data) else {
+            NSSound.beep()
+            return
+        }
+        attachedImages.append(image)
+        updateAttachmentStatus()
+    }
+
+    /// 没有图时什么都不做 —— 输入框的 ⌘⌫ 要靠这个判断该不该退回「删到行首」
+    private func clearAttachmentsIfAny() {
+        guard !attachedImages.isEmpty else { return }
+        clearAttachments()
+    }
+
+    private func clearAttachments() {
+        attachedImages.removeAll()
+        updateAttachmentStatus()
+    }
+
+    /// 附件状态借用标题栏那行：不改布局，也不用再塞一个按钮
+    private func updateAttachmentStatus() {
+        guard !attachedImages.isEmpty else {
+            setStatus("复用同一个会话")
+            return
+        }
+        setStatus("已附 \(attachedImages.count) 张图 · ⌘⌫ 清空 · 发送时一起发给 claude")
+    }
+
     // MARK: 布局
 
     private func buildLayout() {
@@ -293,6 +351,8 @@ final class ClaudeChatView: NSView {
         input.smartInsertDeleteEnabled = false
         input.allowsUndo = true
         input.onSend = { [weak self] in self?.handleSend() }
+        input.onPasteImage = { [weak self] data in self?.attachImage(data) }
+        input.onClearAttachments = { [weak self] in self?.clearAttachmentsIfAny() }
         input.delegate = self
 
         inputPlaceholder.font = Self.bodyFont
@@ -411,9 +471,13 @@ final class ClaudeChatView: NSView {
     private func handleSend() {
         guard !isSending else { return }
         let text = input.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        // 只有图没有字也允许发 —— 「看看这张」本来就常常不用打字
+        guard !text.isEmpty || !attachedImages.isEmpty else { return }
+
+        let images = attachedImages
         clearInput()
-        onSend?(text)
+        clearAttachments()
+        onSend?(text, images)
     }
 
     /// 输入内容变化：占位符显隐 + 输入框高度

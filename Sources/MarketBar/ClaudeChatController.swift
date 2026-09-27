@@ -133,7 +133,7 @@ final class ClaudeChatController {
 
     private func makeChatView() -> ClaudeChatView {
         let view = ClaudeChatView(frame: NSRect(origin: .zero, size: ClaudeChatPanelLayout.defaultSize))
-        view.onSend = { [weak self] text in self?.send(text) }
+        view.onSend = { [weak self] text, images in self?.send(text, images: images) }
         view.onCancel = { [weak self] in self?.cancelInFlight() }
         view.onNewSession = { [weak self] in self?.startNewSession() }
         view.onEditSession = { [weak self] in self?.promptForSession() }
@@ -246,23 +246,25 @@ final class ClaudeChatController {
 
     // MARK: - 发送
 
-    private func send(_ text: String, isRetry: Bool = false) {
+    private func send(_ text: String, images: [ClaudeChatImage] = [], isRetry: Bool = false) {
         guard currentTask == nil || isRetry else { return }
 
         if !isRetry {
-            appendMessage(ChatMessage(role: .user, text: text))
+            // 转写区把图标出来，不然往回翻只看到一句「看看这张」，不知道当时发了什么
+            let suffix = images.isEmpty ? "" : "（附 \(images.count) 张图）"
+            appendMessage(ChatMessage(role: .user, text: text + suffix))
         }
         beginSendingStatus()
 
         currentTask = Task { [weak self] in
             guard let self else { return }
-            await self.performSend(text, isRetry: isRetry)
+            await self.performSend(text, images: images, isRetry: isRetry)
             self.finishSendingStatus()
             self.currentTask = nil
         }
     }
 
-    private func performSend(_ text: String, isRetry: Bool) async {
+    private func performSend(_ text: String, images: [ClaudeChatImage], isRetry: Bool) async {
         guard let executable = await resolveExecutable() else {
             chatView?.setExecutableMissing(true)
             appendMessage(ChatMessage(role: .error, text: ClaudeChatError.executableNotFound.message))
@@ -273,8 +275,10 @@ final class ClaudeChatController {
         let (sessionID, isResume) = sessionState.begin()
         saveSession()
 
+        // 有图才走 stream-json 输入：`-p` 只收纯文本。没有图的普通消息还是老路径，
+        // 少动一条被长期验证过的路
         let spec = ClaudeChatInvocation.spec(
-            prompt: text,
+            message: ClaudeChatMessage(text: text, images: images),
             sessionID: sessionID,
             isResume: isResume,
             claudePath: executable,
@@ -300,7 +304,8 @@ final class ClaudeChatController {
                     sessionState.sessionBroke()
                     saveSession()
                     appendMessage(ChatMessage(role: .system, text: ClaudeChatError.sessionNotFound.message))
-                    await performSend(text, isRetry: true)
+                    // 重试时**不带图**：会话失效与图片无关，重发一遍图只会白花一次钱
+                    await performSend(text, images: [], isRetry: true)
                     return
                 }
                 throw ClaudeChatError.commandFailed(status: output.status, stderrTail: output.stderrTail)

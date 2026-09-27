@@ -456,3 +456,95 @@ final class ClaudeChatImageInputTests: XCTestCase {
         XCTAssertNil(ClaudeChatMessage(text: "", images: []).streamJSONLine())
     }
 }
+
+// MARK: - 图片附件
+
+final class ChatImageAttachmentTests: XCTestCase {
+    /// 只缩不放 —— 小图放大只会变糊、还费 token
+    func testSmallImagesAreLeftAlone() {
+        XCTAssertEqual(
+            ChatImageAttachment.fittedSize(CGSize(width: 800, height: 600)),
+            CGSize(width: 800, height: 600)
+        )
+        XCTAssertEqual(
+            ChatImageAttachment.fittedSize(CGSize(width: 1568, height: 100)),
+            CGSize(width: 1568, height: 100)
+        )
+    }
+
+    func testLargeImagesAreScaledDownKeepingAspect() {
+        let fitted = ChatImageAttachment.fittedSize(CGSize(width: 4000, height: 3000))
+
+        XCTAssertEqual(fitted.width, 1568)
+        XCTAssertEqual(fitted.height, 1176, "4:3 要保住")
+    }
+
+    /// 竖图按**高**缩，别只看宽
+    func testPortraitImagesScaleByHeight() {
+        let fitted = ChatImageAttachment.fittedSize(CGSize(width: 1000, height: 4000))
+
+        XCTAssertEqual(fitted.height, 1568)
+        XCTAssertEqual(fitted.width, 392)
+    }
+
+    func testDegenerateSizeIsSafe() {
+        XCTAssertEqual(ChatImageAttachment.fittedSize(.zero), .zero, "不该除零崩掉")
+    }
+
+    func testEncodesToPNGBase64() throws {
+        // 2×2 的红点图
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+
+        let attachment = try XCTUnwrap(ChatImageAttachment.make(from: png))
+
+        XCTAssertEqual(attachment.mediaType, "image/png")
+        XCTAssertFalse(attachment.base64.isEmpty)
+        XCTAssertNotNil(Data(base64Encoded: attachment.base64), "得是合法 base64")
+    }
+
+    func testGarbageDataIsRejected() {
+        XCTAssertNil(ChatImageAttachment.make(from: Data("这不是图片".utf8)))
+    }
+}
+
+/// 有图才切到 stream-json 输入：`-p` 只收纯文本
+final class ClaudeChatImageSpecTests: XCTestCase {
+    private let sessionID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    private let executable = URL(fileURLWithPath: "/usr/local/bin/claude")
+    private let cwd = URL(fileURLWithPath: "/tmp")
+
+    private func spec(_ message: ClaudeChatMessage) -> ClaudeProcessSpec {
+        ClaudeChatInvocation.spec(
+            message: message, sessionID: sessionID, isResume: false,
+            claudePath: executable, workingDirectory: cwd
+        )
+    }
+
+    func testTextOnlyKeepsThePrintFlag() {
+        let spec = spec(ClaudeChatMessage(text: "你好"))
+
+        XCTAssertTrue(spec.arguments.contains("-p"))
+        XCTAssertNil(spec.stdin, "没有图就还是走 -p，stdin 接 /dev/null")
+    }
+
+    func testImagesSwitchToStreamInput() throws {
+        let spec = spec(ClaudeChatMessage(
+            text: "看看这张",
+            images: [ClaudeChatImage(mediaType: "image/png", base64: "AAAA")]
+        ))
+
+        XCTAssertFalse(spec.arguments.contains("-p"), "有图就不能走 -p")
+        // 参数前面还有登录 shell 的包装（-lic 等），所以判断「在不在」而不是「是不是第一个」
+        XCTAssertTrue(spec.arguments.contains("--input-format"))
+
+        let stdin = try XCTUnwrap(spec.stdin, "提示词和图都要从 stdin 进去")
+        let line = try XCTUnwrap(String(data: stdin, encoding: .utf8))
+        XCTAssertTrue(line.contains("\"image\""))
+        XCTAssertTrue(line.contains("AAAA"))
+    }
+}
