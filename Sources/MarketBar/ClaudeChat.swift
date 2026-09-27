@@ -10,8 +10,21 @@ enum ClaudeChatInvocation {
     ///
     /// `--permission-mode bypassPermissions` 是用户明确要求的：聊天窗里的会话不弹权限询问。
     /// 代价是它**不再征求同意就能执行命令/改文件** —— 这是刻意的取舍，改动这里前先想清楚。
-    static func arguments(prompt: String, sessionID: UUID, isResume: Bool) -> [String] {
-        var arguments = ["-p", prompt]
+    /// `usesStreamInput` 为真时改用 `--input-format stream-json`：
+    /// 那种模式下提示词**不走 argv**，而是作为一行 JSON 写进 stdin —— 这是给 CLI
+    /// 送图片的唯一途径（`-p` 只收纯文本）。
+    ///
+    /// ⚠️ 实测：`--input-format stream-json` **必须**配 `--output-format stream-json`，
+    /// 否则 CLI 直接报错退出。我们本来就是 stream-json 输出，正好对得上。
+    static func arguments(
+        prompt: String,
+        sessionID: UUID,
+        isResume: Bool,
+        usesStreamInput: Bool = false
+    ) -> [String] {
+        var arguments = usesStreamInput
+            ? ["--input-format", "stream-json"]
+            : ["-p", prompt]
         arguments += isResume
             ? ["--resume", sessionID.uuidString]
             : ["--session-id", sessionID.uuidString]
@@ -40,13 +53,20 @@ enum ClaudeChatInvocation {
         sessionID: UUID,
         isResume: Bool,
         claudePath: URL,
-        workingDirectory: URL
+        workingDirectory: URL,
+        usesStreamInput: Bool = false
     ) -> ClaudeProcessSpec {
         ClaudeProcessSpec(
             executable: URL(fileURLWithPath: "/bin/zsh"),
             arguments: [ "-lic", shellCommand, shellArgumentZero, workingDirectory.path, claudePath.path ]
-                + arguments(prompt: prompt, sessionID: sessionID, isResume: isResume),
-            workingDirectory: workingDirectory
+                + arguments(
+                    prompt: prompt,
+                    sessionID: sessionID,
+                    isResume: isResume,
+                    usesStreamInput: usesStreamInput
+                ),
+            workingDirectory: workingDirectory,
+            stdin: usesStreamInput ? ClaudeChatMessage(text: prompt).streamJSONLine() : nil
         )
     }
 
@@ -67,6 +87,59 @@ struct ClaudeProcessSpec: Equatable, Sendable {
     var executable: URL
     var arguments: [String]
     var workingDirectory: URL
+    /// 写进子进程 stdin 的内容。nil = 接 /dev/null
+    /// （必须接点什么：不接的话 CLI 会白等 3 秒等 stdin）
+    var stdin: Data?
+}
+
+// MARK: - 待发送的消息（含图片）
+
+/// 一张要发给 CLI 的图
+struct ClaudeChatImage: Equatable, Sendable {
+    /// 如 "image/png"
+    var mediaType: String
+    /// base64（不含 data: 前缀）
+    var base64: String
+}
+
+/// 一条待发送的消息：文本 + 若干张图
+struct ClaudeChatMessage: Equatable, Sendable {
+    var text: String
+    var images: [ClaudeChatImage] = []
+
+    /// 编码成 `--input-format stream-json` 要的那一行 JSON。
+    ///
+    /// 实测过的格式（拿一张 1×1 的红点图问「什么颜色」，模型答「粉色」）：
+    /// `{"type":"user","message":{"role":"user","content":[
+    ///   {"type":"text","text":"…"},
+    ///   {"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}]}}`
+    func streamJSONLine() -> Data? {
+        var content: [[String: Any]] = []
+        if !text.isEmpty {
+            content.append(["type": "text", "text": text])
+        }
+        for image in images {
+            content.append([
+                "type": "image",
+                "source": [
+                    "type": "base64",
+                    "media_type": image.mediaType,
+                    "data": image.base64,
+                ],
+            ])
+        }
+        // 既没字也没图就别发，CLI 会当成一个空回合
+        guard !content.isEmpty else { return nil }
+
+        let payload: [String: Any] = [
+            "type": "user",
+            "message": ["role": "user", "content": content],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let line = String(data: data, encoding: .utf8)
+        else { return nil }
+        return Data((line + "\n").utf8)
+    }
 }
 
 // MARK: - 输出与错误
@@ -220,7 +293,12 @@ enum ClaudeProcessRunner {
         process.arguments = spec.arguments
         process.currentDirectoryURL = spec.workingDirectory
         // 不接 /dev/null 的话，claude CLI 会等 3 秒才继续（"no stdin data received in 3s"）
-        process.standardInput = FileHandle.nullDevice
+        // nil 时仍接 /dev/null：不接的话 CLI 会白等 3 秒等 stdin
+        process.standardInput = spec.stdin.map { pipe in
+            let handle = Pipe()
+            process.standardInput = handle
+            return handle
+        } ?? FileHandle.nullDevice
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

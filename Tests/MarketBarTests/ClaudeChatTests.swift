@@ -361,3 +361,98 @@ final class UnreadBadgeTests: XCTestCase {
         XCTAssertNil(UnreadBadge.count(fromStatusTitle: "abc"))
     }
 }
+
+// MARK: - 图片输入（stream-json）
+
+/// 实测过的契约：`--input-format stream-json` 是给 CLI 送图片的唯一途径
+///（`-p` 只收纯文本），而且它**必须**配 `--output-format stream-json`。
+final class ClaudeChatImageInputTests: XCTestCase {
+    private let sessionID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+    func testStreamInputReplacesThePrintFlag() {
+        let arguments = ClaudeChatInvocation.arguments(
+            prompt: "这张图是什么", sessionID: sessionID, isResume: false, usesStreamInput: true
+        )
+
+        XCTAssertFalse(arguments.contains("-p"), "stream-json 模式下提示词不走 argv")
+        XCTAssertFalse(arguments.contains("这张图是什么"), "提示词走 stdin，不该出现在参数里")
+        XCTAssertEqual(arguments.first, "--input-format")
+        XCTAssertEqual(arguments.dropFirst().first, "stream-json")
+    }
+
+    /// ⚠️ 少了这个 CLI 会直接报错退出（实测：requires output-format=stream-json）
+    func testStreamInputKeepsStreamOutput() {
+        let arguments = ClaudeChatInvocation.arguments(
+            prompt: "x", sessionID: sessionID, isResume: false, usesStreamInput: true
+        )
+
+        let index = arguments.firstIndex(of: "--output-format")
+        XCTAssertEqual(index.map { arguments[$0 + 1] }, "stream-json")
+    }
+
+    /// 默认仍是老的 -p 路径，行为不变
+    func testDefaultStillUsesPrintFlag() {
+        let arguments = ClaudeChatInvocation.arguments(prompt: "你好", sessionID: sessionID, isResume: false)
+
+        XCTAssertEqual(arguments.first, "-p")
+        XCTAssertEqual(arguments.dropFirst().first, "你好")
+        XCTAssertFalse(arguments.contains("--input-format"))
+    }
+
+    // MARK: 消息编码
+
+    private func decode(_ data: Data?) throws -> [String: Any] {
+        let data = try XCTUnwrap(data)
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(text.hasSuffix("\n"), "stdin 要一行一条")
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(text.dropLast().utf8)) as? [String: Any]
+        )
+    }
+
+    func testEncodesTextOnly() throws {
+        let payload = try decode(ClaudeChatMessage(text: "你好").streamJSONLine())
+
+        XCTAssertEqual(payload["type"] as? String, "user")
+        let message = try XCTUnwrap(payload["message"] as? [String: Any])
+        let content = try XCTUnwrap(message["content"] as? [[String: Any]])
+        XCTAssertEqual(content.count, 1)
+        XCTAssertEqual(content[0]["type"] as? String, "text")
+        XCTAssertEqual(content[0]["text"] as? String, "你好")
+    }
+
+    func testEncodesImageBlock() throws {
+        let message = ClaudeChatMessage(
+            text: "看看这张",
+            images: [ClaudeChatImage(mediaType: "image/png", base64: "AAAA")]
+        )
+
+        let payload = try decode(message.streamJSONLine())
+        let content = try XCTUnwrap((payload["message"] as? [String: Any])?["content"] as? [[String: Any]])
+
+        XCTAssertEqual(content.count, 2)
+        XCTAssertEqual(content[1]["type"] as? String, "image")
+        let source = try XCTUnwrap(content[1]["source"] as? [String: Any])
+        XCTAssertEqual(source["type"] as? String, "base64")
+        XCTAssertEqual(source["media_type"] as? String, "image/png")
+        XCTAssertEqual(source["data"] as? String, "AAAA")
+    }
+
+    /// 只有图没有字也要发得出去
+    func testEncodesImageWithoutText() throws {
+        let message = ClaudeChatMessage(text: "", images: [ClaudeChatImage(mediaType: "image/jpeg", base64: "BBBB")])
+
+        let content = try XCTUnwrap(
+            (try decode(message.streamJSONLine())["message"] as? [String: Any])?["content"] as? [[String: Any]]
+        )
+
+        XCTAssertEqual(content.count, 1)
+        XCTAssertEqual(content[0]["type"] as? String, "image")
+    }
+
+    /// 既没字也没图就别发 —— CLI 会把它当成一个空回合
+    func testEmptyMessageEncodesToNil() {
+        XCTAssertNil(ClaudeChatMessage(text: "").streamJSONLine())
+        XCTAssertNil(ClaudeChatMessage(text: "", images: []).streamJSONLine())
+    }
+}
