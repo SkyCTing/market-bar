@@ -404,6 +404,26 @@ struct FloatingCharacterCountdownLayout {
     static var occupiedHeight: CGFloat { height + spacing }
 }
 
+/// 人物的命中区域。做成纯函数是为了能单测 —— 头部在贴图里的位置只能靠比例估，
+/// 估错了要么点不到、要么还是误触。
+enum FloatingCharacterHitRegion {
+    /// 头部区域。x/y 都从**左上角**算（和看图时的直觉一致），单位是视图尺寸的比例。
+    ///
+    /// 这是只小鸡角色：脑袋占了上半部分偏中，牌子在中间，腿在下面。
+    static let headFromTop = CGRect(x: 0.20, y: 0.02, width: 0.60, height: 0.40)
+
+    /// `point` 是视图坐标系里的点。视图**非翻转**，所以 y 从底边算，
+    /// 这里换算成「离顶边多远」再比对。
+    static func isOnHead(_ point: NSPoint, in size: NSSize) -> Bool {
+        guard size.width > 0, size.height > 0 else { return false }
+        let fromTop = CGPoint(
+            x: point.x / size.width,
+            y: (size.height - point.y) / size.height
+        )
+        return headFromTop.contains(fromTop)
+    }
+}
+
 struct FloatingCharacterAmbientMotion {
     static let scaleFrom: CGFloat = 0.985
     static let scaleTo: CGFloat = 1.020
@@ -2321,8 +2341,13 @@ final class FloatingCharacterView: NSView {
 
     /// 触控板双指点按 / 鼠标右键。整条路径不碰左键的连击状态机（单击/双击/连击逻辑完全不受影响），
     /// 也不调用 super —— 顺带屏蔽掉继承来的右键菜单。
+    ///
+    /// ⚠️ **只在头部生效**：整个视图都能右击的话区域太大，点身体、点牌子、
+    /// 想拖它的时候都会误触聊天窗。
     override func rightMouseDown(with event: NSEvent) {
         guard let window else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard FloatingCharacterHitRegion.isOnHead(point, in: bounds.size) else { return }
         onRightClick?(window.convertToScreen(convert(bounds, to: nil)))
     }
 

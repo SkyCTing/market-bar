@@ -963,3 +963,66 @@ final class FloatingCharacterDockHideTests: XCTestCase {
 
     private var bigScreen: NSRect { NSRect(x: 0, y: 0, width: 1_512, height: 982) }
 }
+
+// MARK: - 右击只在头部生效
+
+final class FloatingCharacterHitRegionTests: XCTestCase {
+    private let size = NSSize(width: 200, height: 200)
+
+    /// ⚠️ 视图是**非翻转**的：y 从底边算。所以「头顶」在视图坐标里 y 很大。
+    /// 这条专门盯这个换算，写反了会出现「点脚能开聊天、点头不行」
+    func testTopOfTheViewCountsAsHead() {
+        XCTAssertTrue(
+            FloatingCharacterHitRegion.isOnHead(NSPoint(x: 100, y: 170), in: size),
+            "视图顶部（y 大）才是头"
+        )
+        XCTAssertFalse(
+            FloatingCharacterHitRegion.isOnHead(NSPoint(x: 100, y: 30), in: size),
+            "视图底部（y 小）是腿，不该算头"
+        )
+    }
+
+    func testHeadCentreIsInside() {
+        // 从顶算 22% 处 → 视图坐标 y = 200 × (1 - 0.22) = 156
+        XCTAssertTrue(FloatingCharacterHitRegion.isOnHead(NSPoint(x: 100, y: 156), in: size))
+    }
+
+    /// 举牌和腿在下面 —— 点那儿是在「摸身体」，不该弹聊天窗
+    func testBodyAndSignAreOutside() {
+        for y in [10.0, 50, 90, 110] {
+            XCTAssertFalse(
+                FloatingCharacterHitRegion.isOnHead(NSPoint(x: 100, y: y), in: size),
+                "y=\(y) 是身体/牌子，不该算头"
+            )
+        }
+    }
+
+    /// 左右两侧留白不是头（贴图是透明的，那里什么都没有）
+    func testSidesAreOutside() {
+        for x in [5.0, 30, 170, 195] {
+            XCTAssertFalse(
+                FloatingCharacterHitRegion.isOnHead(NSPoint(x: x, y: 156), in: size),
+                "x=\(x) 在两侧留白处"
+            )
+        }
+    }
+
+    /// 比头顶还高（视图最上沿）不算
+    func testAboveTheHeadIsOutside() {
+        XCTAssertFalse(FloatingCharacterHitRegion.isOnHead(NSPoint(x: 100, y: 199), in: size))
+    }
+
+    /// 尺寸退化时不该崩，也不该命中
+    func testDegenerateSizeIsSafe() {
+        XCTAssertFalse(FloatingCharacterHitRegion.isOnHead(NSPoint(x: 0, y: 0), in: .zero))
+    }
+
+    /// 换尺寸档位时命中区域跟着缩放（比例算的，不是写死的像素）
+    func testRegionScalesWithSize() {
+        let small = NSSize(width: 100, height: 100)
+        let large = NSSize(width: 320, height: 320)
+
+        XCTAssertTrue(FloatingCharacterHitRegion.isOnHead(NSPoint(x: 50, y: 78), in: small))
+        XCTAssertTrue(FloatingCharacterHitRegion.isOnHead(NSPoint(x: 160, y: 250), in: large))
+    }
+}
