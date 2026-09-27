@@ -555,7 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var dailyBarsSessionKey = ""
     private var isLoadingDailyBars = false
     private var nextDailyBarsRetry = Date.distantPast
-    private var isFetching = false
+    private var quoteRefreshGate = QuoteRefreshGate()
     private var lastUpdateTime: Date?
 
     // Hover panel
@@ -729,13 +729,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshPrice() async {
-        guard !isFetching else { return }
-        isFetching = true
-        defer { isFetching = false }
+        guard let generation = quoteRefreshGate.begin() else { return }
+        let provider = selectedProvider
+        defer {
+            if quoteRefreshGate.finish(generation) {
+                Task { [weak self] in await self?.refreshPrice() }
+            }
+        }
 
         // 三个请求并发发起：各自 5 秒超时，串行的话最坏要 15 秒，
-        // 而 isFetching 会把这段时间的刷新全部丢掉。
-        async let priceTask = service.fetchPriceInfo(for: selectedProvider)
+        // 而刷新门控会跳过这段时间里的重复请求。
+        async let priceTask = service.fetchPriceInfo(for: provider)
         async let marketTask = service.fetchMarketData(currentGoldPrice: currentPrice)
         // 在主线程上取快照：后台那条任务绝不能直接读 StockWatchlist 的全局状态
         let watchlistCodes = StockWatchlist.codes
@@ -743,15 +747,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         async let stockTask = service.fetchStockQuotes(codes: watchlistCodes, fallback: watchlistEntries)
 
         let info = await priceTask
+        let market = await marketTask
+        let stocks = await stockTask
+        guard quoteRefreshGate.accepts(generation) else { return }
         currentPriceInfo = info
         currentPrice = info.price
+        currentMarketData = market
+        currentStockQuotes = stocks
         lastUpdateTime = Date()
         updateStatusTitle()
         refreshHolidaysIfNeeded()
         refreshUnreadIfNeeded()
         updateFloatingCharacter()
-        currentMarketData = await marketTask
-        currentStockQuotes = await stockTask
 
         // 先把这一轮的价格记进历史，再判定 —— 判定要用「N 分钟前」的点
         recordPriceSamples()
@@ -771,7 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 昨日成交量在一个交易日内是常量，所以每个「行情会话日」只拉一次日线。
     ///
-    /// 这里只起 Task 不 await：`refreshPrice` 全程持着 `isFetching`，
+    /// 这里只起 Task 不 await：`refreshPrice` 全程占用刷新请求槽，
     /// 一旦 await 就会把 1 秒一跳卡住（最坏 5 秒），那段时间的价格刷新会被全部丢掉。
     private func scheduleDailyBarsLoadIfNeeded() {
         let key = currentStockQuotes.values.map(\.sessionDate).max() ?? ""
@@ -1003,9 +1010,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc
     private func selectProvider(_ sender: NSMenuItem) {
         guard let provider = sender.representedObject as? GoldProvider else { return }
+        guard provider != selectedProvider else { return }
+        quoteRefreshGate.invalidate()
+        priceHistory.remove(key: Self.goldHistoryKey)
         selectedProvider = provider
         currentPrice = 0
         currentPriceInfo = .empty
+        currentMarketData = .empty
+        lastUpdateTime = nil
         updateStatusTitle()
         floatingCharacterController.resetQuoteHistory()
         floatingCharacterController.update(
@@ -1097,6 +1109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 行情缓存必须一起清掉：清单里删掉的代码若留在 `currentStockQuotes` /
     /// `dailyBars` 里，合计盈亏会把它算进去（面板上看不见，但数字是错的）。
     private func applyWatchlistConfig() {
+        quoteRefreshGate.invalidate()
         StockWatchlist.reload()
         StockHoldings.reload()
         currentStockQuotes = [:]
@@ -1410,19 +1423,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func checkPriceAlerts() {
         guard !priceAlertStore.alerts.isEmpty else { return }
+        let now = Date()
 
         for alert in priceAlertStore.alerts {
             // 这只标的这轮没行情（停牌、接口没返回）就跳过，别拿旧价格去判
-            guard let targetPrice = currentPrice(for: alert.target) else { continue }
+            guard let targetPrice = currentPrice(for: alert.target, at: now) else { continue }
 
             var reference: Double?
             if case .movesWithin(_, let minutes) = alert.direction {
-                if case .stock(let code) = alert.target {
-                    guard let quote = currentStockQuotes[code],
-                          QuoteFreshness.evaluate(quote, at: Date(), holidays: holidays) == .current
-                    else { continue }
-                }
-                reference = referencePrice(for: alert.target, minutes: minutes, now: Date())
+                reference = referencePrice(for: alert.target, minutes: minutes, now: now)
             }
             let outcome = PriceAlertEvaluator.evaluate(alert, price: targetPrice, referencePrice: reference)
             // 闩锁变了就落盘：不落盘的话「不重复」的提醒重启后会再响一次
@@ -1441,12 +1450,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 某个标的此刻的价格；没有可用价格就返回 nil
-    private func currentPrice(for target: PriceAlert.Target) -> Double? {
+    private func currentPrice(for target: PriceAlert.Target, at now: Date) -> Double? {
         switch target {
         case .gold:
             return currentPrice > 0 ? currentPrice : nil
         case .stock(let code):
-            return currentStockQuotes[code]?.numericPrice
+            guard let quote = currentStockQuotes[code] else { return nil }
+            return PriceAlertEvaluator.currentStockPrice(quote, at: now, holidays: holidays)
         }
     }
 

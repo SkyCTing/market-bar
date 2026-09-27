@@ -106,6 +106,18 @@ private func testImage(width: Int = 4, height: Int = 4) throws -> Data {
 
 @MainActor
 final class ChatImageInteractionTests: XCTestCase {
+    func testClearingTranscriptInvalidatesOldStreamOffset() {
+        let view = ClaudeChatView()
+        view.append(ChatMessage(role: .user, text: String(repeating: "old", count: 200)))
+        view.beginStream()
+        view.clearTranscript()
+        view.renderStream(thinking: "", text: "late old reply", tokens: nil, date: Date(), isFinal: false)
+        XCTAssertTrue(view.isTranscriptEmpty)
+        view.beginStream()
+        view.renderStream(thinking: "", text: "new reply", tokens: nil, date: Date(), isFinal: true)
+        XCTAssertFalse(view.isTranscriptEmpty)
+    }
+
     func testCommandVThroughEditMenuAttachesImageFromNamedPasteboard() throws {
         _ = NSApplication.shared
         let board = NSPasteboard(name: .init("ChatImageInteractionTests.\(UUID())"))
@@ -163,9 +175,12 @@ final class ChatImageInteractionTests: XCTestCase {
         XCTAssertEqual(view.inputText, "看看图片")
         XCTAssertEqual(view.attachedImages, [image])
         view.setSending(true)
+        let sessionButton = try XCTUnwrap(descendants(view).compactMap { $0 as? NSButton }.first { $0.title == "会话…" })
+        XCTAssertFalse(sessionButton.isEnabled)
         view.attachImages([image])
         XCTAssertEqual(view.attachedImages.count, 1)
         view.setSending(false)
+        XCTAssertTrue(sessionButton.isEnabled)
         XCTAssertEqual(view.inputText, "看看图片", "Failure or cancellation keeps the draft")
         view.clearDraft()
         XCTAssertTrue(view.inputText.isEmpty)
@@ -262,6 +277,93 @@ final class ChatImageInteractionTests: XCTestCase {
         XCTAssertEqual(try canonical(first), try canonical(second), "Session recovery must resend the image, not just the text")
         let expected = try XCTUnwrap(ClaudeChatMessage(text: draft, images: [image]).streamJSONLine())
         XCTAssertEqual(try canonical(first), try canonical(expected))
+        let retriedID = try XCTUnwrap(controller.sessionID)
+        XCTAssertEqual(ChatTranscriptStore.load(sessionID: retriedID).filter { $0.role == .user }.map(\.text),
+                       [draft + "（附 1 张图）"])
+    }
+
+    func testNewSessionPersistsFirstQuestionBeforeStartingCLI() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("FirstChat-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let suite = "FirstChat.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let executable = directory.appendingPathComponent("fake-claude")
+        try """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"result","result":"test reply","is_error":false}'
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        defaults.set(executable.path, forKey: "claudeChatExecutablePath")
+        defaults.set(directory.path, forKey: "claudeChatWorkingDirectory")
+        let controller = ClaudeChatController(defaults: defaults)
+        defer {
+            controller.shutdown()
+            if let id = controller.sessionID { ChatTranscriptStore.remove(sessionID: id) }
+            defaults.removePersistentDomain(forName: suite)
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Test cleanup failed: \(error)") }
+        }
+        XCTAssertNil(controller.sessionID)
+        let draft = "first message \(UUID())"
+        controller.showDraft(draft, anchor: NSRect(x: 500, y: 500, width: 200, height: 200))
+        let view = try XCTUnwrap(NSApp.windows.compactMap { $0.contentView as? ClaudeChatView }.first { $0.inputText == draft })
+        let input = try XCTUnwrap(view.inputResponder as? ChatInputTextView)
+        input.onSend?()
+        let id = try XCTUnwrap(controller.sessionID)
+        XCTAssertEqual(ChatTranscriptStore.load(sessionID: id).map(\.text), [draft])
+        for _ in 0..<160 {
+            if view.inputText.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(view.inputText.isEmpty)
+        XCTAssertEqual(ChatTranscriptStore.load(sessionID: id).filter { $0.role == .user }.map(\.text), [draft])
+    }
+
+    func testSwitchingSessionCancelsPendingReplyWithoutChangingNewHistory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SwitchChat-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let suite = "SwitchChat.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let old = UUID()
+        let new = UUID()
+        let executable = directory.appendingPathComponent("fake-claude")
+        try """
+        #!/bin/sh
+        printf started > "$0.started"
+        exec /bin/sleep 5
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        defaults.set(old.uuidString, forKey: "claudeChatSessionID")
+        defaults.set(executable.path, forKey: "claudeChatExecutablePath")
+        defaults.set(directory.path, forKey: "claudeChatWorkingDirectory")
+        let saved = ChatMessage(role: .assistant, text: "new session history")
+        ChatTranscriptStore.append(saved, sessionID: new)
+        let controller = ClaudeChatController(defaults: defaults)
+        defer {
+            controller.shutdown()
+            ChatTranscriptStore.remove(sessionID: old)
+            ChatTranscriptStore.remove(sessionID: new)
+            defaults.removePersistentDomain(forName: suite)
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Test cleanup failed: \(error)") }
+        }
+        let draft = "session switch \(UUID())"
+        controller.showDraft(draft, anchor: NSRect(x: 500, y: 500, width: 200, height: 200))
+        let view = try XCTUnwrap(NSApp.windows.compactMap { $0.contentView as? ClaudeChatView }.first { $0.inputText == draft })
+        let input = try XCTUnwrap(view.inputResponder as? ChatInputTextView)
+        input.onSend?()
+        let marker = executable.path + ".started"
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: marker) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker))
+        controller.switchSession(to: new)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(controller.sessionID, new)
+        XCTAssertEqual(ChatTranscriptStore.load(sessionID: new), [saved])
+        XCTAssertEqual(view.inputText, draft)
+        XCTAssertTrue(input.isEditable)
     }
 
     private func descendants(_ view: NSView) -> [NSView] {

@@ -211,6 +211,7 @@ final class ClaudeChatView: NSView {
     }
 
     func clearTranscript() {
+        streamStart = nil
         transcript.textStorage?.setAttributedString(NSAttributedString(string: ""))
     }
 
@@ -224,6 +225,7 @@ final class ClaudeChatView: NSView {
         sendButton.title = sending ? "停止" : "发送"
         input.isEditable = !sending
         imageButton.isEnabled = !sending
+        sessionButton.isEnabled = !sending
         for case let button as NSButton in attachmentStack.arrangedSubviews { button.isEnabled = !sending }
     }
 

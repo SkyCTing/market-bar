@@ -219,6 +219,13 @@ extension PriceAlert {
 
 /// 触发判定。纯函数，便于单测。
 enum PriceAlertEvaluator {
+    static func currentStockPrice(
+        _ quote: StockQuote, at now: Date, holidays: [String: String]
+    ) -> Double? {
+        guard QuoteFreshness.evaluate(quote, at: now, holidays: holidays) == .current else { return nil }
+        return quote.numericPrice
+    }
+
     /// 价格到了，这一条该不该响；以及响完之后这条提醒的新状态。
     ///
     /// - 越过阈值且还没告警过 → 响，闩锁置上
@@ -304,6 +311,10 @@ struct PriceHistory {
 
     mutating func retain(keys: Set<String>) {
         entries = entries.filter { keys.contains($0.key) }
+    }
+
+    mutating func remove(key: String) {
+        entries.removeValue(forKey: key)
     }
 }
 

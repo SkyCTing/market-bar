@@ -215,6 +215,10 @@ final class ClaudeChatController {
 
     /// 查看/修改复用的会话 id：粘一个已有 id 进来就能接管那个会话（比如终端里聊过的）
     private func promptForSession() {
+        guard currentTask == nil else {
+            chatView?.setStatus("请先停止当前回复，再切换会话")
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "复用的会话"
         alert.informativeText = "粘贴一个会话 id 可接管该会话；留空表示下次从新会话开始。"
@@ -231,37 +235,43 @@ final class ClaudeChatController {
 
         let raw = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty {
-            sessionState.reset()
-            saveSession()
-            chatView?.clearTranscript()
-            chatView?.append(ChatMessage(role: .system, text: "已清空会话，下次发送会开新会话"))
+            switchSession(to: nil)
         } else if let id = UUID(uuidString: raw) {
-            sessionState = ClaudeChatSessionState(sessionID: id)
-            saveSession()
-            chatView?.clearTranscript()
-            loadHistory(into: chatView ?? ClaudeChatView())
+            switchSession(to: id)
         } else {
             chatView?.append(ChatMessage(role: .error, text: "会话 id 格式不对：\(raw)"))
         }
     }
 
+    func switchSession(to id: UUID?) {
+        cancelInFlight()
+        sessionState = ClaudeChatSessionState(sessionID: id)
+        saveSession()
+        guard let view = chatView else { return }
+        view.clearTranscript()
+        if id != nil {
+            loadHistory(into: view)
+        } else {
+            view.append(ChatMessage(role: .system, text: "已清空会话，下次发送会开新会话"))
+        }
+    }
+
     // MARK: - 发送
 
-    private func send(_ text: String, images: [ClaudeChatImage] = [], isRetry: Bool = false) {
-        guard currentTask == nil || isRetry else { return }
+    private func send(_ text: String, images: [ClaudeChatImage] = []) {
+        guard currentTask == nil else { return }
 
-        if !isRetry {
-            // 转写区把图标出来，不然往回翻只看到一句「看看这张」，不知道当时发了什么
-            let suffix = images.isEmpty ? "" : "（附 \(images.count) 张图）"
-            appendMessage(ChatMessage(role: .user, text: text + suffix))
-        }
+        let session = sessionState.begin()
+        saveSession()
+        let suffix = images.isEmpty ? "" : "（附 \(images.count) 张图）"
+        appendMessage(ChatMessage(role: .user, text: text + suffix))
         beginSendingStatus()
         requestID = UUID()
         let token = requestID
 
         currentTask = Task { [weak self] in
             guard let self else { return }
-            let succeeded = await self.performSend(text, images: images, isRetry: isRetry, token: token)
+            let succeeded = await self.performSend(text, images: images, session: session, isRetry: false, token: token)
             guard self.requestID == token else { return }
             if succeeded { self.chatView?.clearDraft() }
             self.finishSendingStatus()
@@ -269,7 +279,10 @@ final class ClaudeChatController {
         }
     }
 
-    private func performSend(_ text: String, images: [ClaudeChatImage], isRetry: Bool, token: UUID) async -> Bool {
+    private func performSend(
+        _ text: String, images: [ClaudeChatImage], session: (id: UUID, isResume: Bool),
+        isRetry: Bool, token: UUID
+    ) async -> Bool {
         let resolved = await resolveExecutable()
         guard requestID == token, !Task.isCancelled else { return false }
         guard let executable = resolved else {
@@ -279,8 +292,7 @@ final class ClaudeChatController {
         }
         chatView?.setExecutableMissing(false)
 
-        let (sessionID, isResume) = sessionState.begin()
-        saveSession()
+        let (sessionID, isResume) = session
 
         // 有图才走 stream-json 输入：`-p` 只收纯文本。没有图的普通消息还是老路径，
         // 少动一条被长期验证过的路
@@ -310,9 +322,12 @@ final class ClaudeChatController {
                 // 存的会话在服务端不存在 → 清掉并**只重试一次**
                 if isResume, !isRetry, ClaudeChatParser.indicatesBrokenSession(output) {
                     sessionState.sessionBroke()
+                    let retrySession = sessionState.begin()
                     saveSession()
+                    let suffix = images.isEmpty ? "" : "（附 \(images.count) 张图）"
+                    persist(ChatMessage(role: .user, text: text + suffix))
                     appendMessage(ChatMessage(role: .system, text: ClaudeChatError.sessionNotFound.message))
-                    return await performSend(text, images: images, isRetry: true, token: token)
+                    return await performSend(text, images: images, session: retrySession, isRetry: true, token: token)
                 }
                 throw ClaudeChatError.commandFailed(status: output.status, stderrTail: output.stderrTail)
             }
