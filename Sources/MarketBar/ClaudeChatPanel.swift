@@ -82,7 +82,54 @@ final class ClaudeChatPanel: NSPanel {
 
 /// 转写区：只读、可选中、可跨消息复制
 final class ChatTranscriptTextView: NSTextView {
+    var onUserScrollBegan: (() -> Void)?
+    var onUserScrollEnded: (() -> Void)?
     override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        let navigationKeys: Set<UInt16> = [115, 116, 119, 121, 123, 124, 125, 126]
+        guard navigationKeys.contains(event.keyCode) else {
+            super.keyDown(with: event)
+            return
+        }
+        let previousOrigin = visibleRect.origin
+        if [115, 116, 123, 126].contains(event.keyCode) { onUserScrollBegan?() }
+        super.keyDown(with: event)
+        if visibleRect.origin != previousOrigin { onUserScrollEnded?() }
+    }
+}
+
+final class ChatTranscriptScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+    var onUserScrollBegan: (() -> Void)?
+    var onUserScrollEnded: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onUserScrollBegan?()
+        super.mouseDown(with: event)
+        onUserScrollEnded?()
+    }
+}
+
+final class ChatTranscriptScrollView: NSScrollView {
+    var onUserScrollBegan: (() -> Void)?
+    var onUserScrollEnded: (() -> Void)?
+    var onScrollPositionChanged: (() -> Void)?
+    private var previousOrigin = NSPoint.zero
+
+    override func scrollWheel(with event: NSEvent) {
+        let origin = contentView.bounds.origin
+        if event.scrollingDeltaY > 0 { onUserScrollBegan?() }
+        super.scrollWheel(with: event)
+        if contentView.bounds.origin != origin { onUserScrollEnded?() }
+    }
+
+    override func reflectScrolledClipView(_ clipView: NSClipView) {
+        super.reflectScrolledClipView(clipView)
+        guard clipView.bounds.origin != previousOrigin else { return }
+        previousOrigin = clipView.bounds.origin
+        onScrollPositionChanged?()
+    }
 }
 
 /// 输入框：Enter 发送、Shift+Enter 换行
@@ -164,7 +211,7 @@ final class ClaudeChatView: NSView {
     var onPickExecutable: (() -> Void)?
 
     private let transcript = ChatTranscriptTextView(frame: .zero)
-    private let transcriptScroll = NSScrollView()
+    private let transcriptScroll = ChatTranscriptScrollView()
     private let input = ChatInputTextView(frame: .zero)
     private let inputScroll = NSScrollView()
     /// NSTextView 没有占位符，自己叠一个
@@ -181,6 +228,10 @@ final class ClaudeChatView: NSView {
     private var isSending = false
     /// 当前流式块的起始位置（块永远在转写区末尾）
     private var streamStart: Int?
+    private var followsLatestMessage = true
+    private var transcriptLayoutPending = false
+    private var isUpdatingTranscript = false
+    private var isTrackingTranscriptScroller = false
 
     private static let bodyFont = NSFont.systemFont(ofSize: 13)
     private static let headerHeight: CGFloat = 38
@@ -203,16 +254,19 @@ final class ClaudeChatView: NSView {
     // MARK: 对外接口
 
     func append(_ message: ChatMessage) {
-        let stickToBottom = isScrolledToBottom()
+        isUpdatingTranscript = true
+        defer { isUpdatingTranscript = false }
         transcript.textStorage?.append(Self.attributed(for: message))
-        if stickToBottom {
-            scrollTranscriptToBottom()
-        }
+        scheduleTranscriptLayout()
     }
 
     func clearTranscript() {
+        isUpdatingTranscript = true
+        defer { isUpdatingTranscript = false }
         streamStart = nil
+        followsLatestMessage = true
         transcript.textStorage?.setAttributedString(NSAttributedString(string: ""))
+        scheduleTranscriptLayout()
     }
 
     func setStatus(_ text: String) {
@@ -257,15 +311,16 @@ final class ClaudeChatView: NSView {
 
     func renderStream(thinking: String, text: String, tokens: Int?, date: Date, isFinal: Bool) {
         guard let start = streamStart, let storage = transcript.textStorage else { return }
+        isUpdatingTranscript = true
+        defer { isUpdatingTranscript = false }
         let rendered = Self.attributedStream(thinking: thinking, text: text, tokens: tokens, date: date)
-        let stickToBottom = isScrolledToBottom()
 
         storage.replaceCharacters(
             in: NSRange(location: start, length: storage.length - start),
             with: rendered
         )
         if isFinal { streamStart = nil }
-        if stickToBottom { scrollTranscriptToBottom() }
+        scheduleTranscriptLayout()
     }
 
     func clearInput() {
@@ -405,9 +460,34 @@ final class ClaudeChatView: NSView {
         )
 
         transcriptScroll.documentView = transcript
+        let scroller = ChatTranscriptScroller()
+        transcriptScroll.verticalScroller = scroller
         transcriptScroll.hasVerticalScroller = true
         transcriptScroll.drawsBackground = false
         transcriptScroll.contentView.drawsBackground = false
+        let began: () -> Void = { [weak self] in self?.followsLatestMessage = false }
+        let ended: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.followsLatestMessage = self.isScrolledToBottom()
+            if self.followsLatestMessage { self.scheduleTranscriptLayout() }
+        }
+        transcriptScroll.onUserScrollBegan = began
+        transcriptScroll.onUserScrollEnded = ended
+        transcriptScroll.onScrollPositionChanged = { [weak self] in
+            guard let self, !self.isUpdatingTranscript, !self.isTrackingTranscriptScroller,
+                  !self.followsLatestMessage else { return }
+            self.followsLatestMessage = self.isScrolledToBottom()
+        }
+        scroller.onUserScrollBegan = { [weak self] in
+            self?.isTrackingTranscriptScroller = true
+            began()
+        }
+        scroller.onUserScrollEnded = { [weak self] in
+            self?.isTrackingTranscriptScroller = false
+            ended()
+        }
+        transcript.onUserScrollBegan = began
+        transcript.onUserScrollEnded = ended
 
         // ── 输入区
         input.font = Self.bodyFont
@@ -571,6 +651,8 @@ final class ClaudeChatView: NSView {
         // 只有图没有字也允许发 —— 「看看这张」本来就常常不用打字
         guard !text.isEmpty || !attachedImages.isEmpty else { return }
 
+        followsLatestMessage = true
+        scheduleTranscriptLayout()
         onSend?(text, attachedImages)
     }
 
@@ -616,25 +698,42 @@ final class ClaudeChatView: NSView {
         }
 
         updateInputHeight()
-        transcript.textContainer?.containerSize = NSSize(
-            width: transcriptScroll.contentSize.width,
-            height: .greatestFiniteMagnitude
-        )
+        scheduleTranscriptLayout()
     }
 
     // MARK: 滚动
 
     private func isScrolledToBottom() -> Bool {
         let visible = transcriptScroll.contentView.bounds
-        return visible.maxY >= transcript.frame.maxY - 4
+        return visible.maxY >= transcript.bounds.maxY - 4
     }
 
-    private func scrollTranscriptToBottom() {
-        // 晚一个 runloop 再滚：此时布局已完成，否则 scrollRangeToVisible 会静默无效
+    private func scheduleTranscriptLayout() {
+        guard !transcriptLayoutPending else { return }
+        transcriptLayoutPending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let end = (self.transcript.string as NSString).length
-            self.transcript.scrollRangeToVisible(NSRange(location: end, length: 0))
+            defer { self.transcriptLayoutPending = false }
+            self.isUpdatingTranscript = true
+            defer { self.isUpdatingTranscript = false }
+            self.layoutSubtreeIfNeeded()
+            let clip = self.transcriptScroll.contentView
+            let previousOrigin = clip.bounds.origin
+            let width = self.transcriptScroll.contentSize.width
+            guard width > 0, let container = self.transcript.textContainer,
+                  let manager = self.transcript.layoutManager else { return }
+
+            // 先完成 TextKit 布局再量高度；内容增长不能被当成用户上翻。
+            self.transcript.setFrameSize(NSSize(width: width, height: self.transcript.frame.height))
+            container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+            manager.ensureLayout(for: container)
+            let height = ceil(manager.usedRect(for: container).maxY + self.transcript.textContainerInset.height * 2)
+            self.transcript.setFrameSize(NSSize(width: width, height: max(clip.bounds.height, height)))
+            let origin = self.followsLatestMessage
+                ? NSPoint(x: 0, y: max(0, self.transcript.bounds.maxY - clip.bounds.height))
+                : previousOrigin
+            clip.scroll(to: origin)
+            self.transcriptScroll.reflectScrolledClipView(clip)
         }
     }
 
