@@ -510,6 +510,54 @@ final class ChatImageAttachmentTests: XCTestCase {
     func testGarbageDataIsRejected() {
         XCTAssertNil(ChatImageAttachment.make(from: Data("这不是图片".utf8)))
     }
+
+    func testImageFileDetection() {
+        XCTAssertTrue(ChatImageAttachment.isImageFile(URL(fileURLWithPath: "/tmp/a.png")))
+        XCTAssertTrue(ChatImageAttachment.isImageFile(URL(fileURLWithPath: "/tmp/a.JPG")))
+        XCTAssertTrue(ChatImageAttachment.isImageFile(URL(fileURLWithPath: "/tmp/a.heic")))
+        XCTAssertFalse(ChatImageAttachment.isImageFile(URL(fileURLWithPath: "/tmp/a.txt")))
+        XCTAssertFalse(ChatImageAttachment.isImageFile(URL(fileURLWithPath: "/tmp/a.pdf")))
+        XCTAssertFalse(ChatImageAttachment.isImageFile(URL(fileURLWithPath: "/tmp/noext")))
+    }
+
+    /// ⚠️ 在 Finder 里拷贝一个图片文件时，粘贴板上**只有文件 URL**，没有图像数据。
+    /// 只查 png/tiff 的话这种就漏了，用户看到的是「⌘V 没反应」
+    func testReadsImageFromFileURLPasteboard() throws {
+        let png = try XCTUnwrap(makeTinyPNG())
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("paste-test-\(UUID().uuidString).png")
+        try png.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("ChatImageAttachmentTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects([file as NSURL])
+
+        XCTAssertNotNil(ChatImageAttachment.imageData(from: pasteboard), "文件 URL 也要能取出图")
+    }
+
+    /// 拖进来一个 .txt 不该被当成图
+    func testNonImageFileOnPasteboardIsIgnored() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("paste-test-\(UUID().uuidString).txt")
+        try Data("不是图".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("ChatImageAttachmentTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects([file as NSURL])
+
+        XCTAssertNil(ChatImageAttachment.imageData(from: pasteboard))
+    }
+
+    private func makeTinyPNG() -> Data? {
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        )
+        return rep?.representation(using: .png, properties: [:])
+    }
 }
 
 /// 有图才切到 stream-json 输入：`-p` 只收纯文本
