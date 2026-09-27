@@ -82,6 +82,58 @@ final class MarketCalendarTests: XCTestCase {
         let second = MarketClosedGreeting.lines(for: date(2026, 9, 26), holidayName: nil)
         XCTAssertEqual(first.greeting, second.greeting)
     }
+
+    func testMidAutumnGreetingOnlyAppearsOnLunarAugustFifteenth() {
+        let holidayDates = [
+            "2026-09-25": "中秋节",
+            "2026-09-26": "中秋节",
+            "2026-09-27": "中秋节",
+        ]
+        let festival = MarketClosedGreeting.lines(for: date(2026, 9, 25), holidayName: "中秋节")
+        XCTAssertEqual(festival.headline, "中秋节")
+        XCTAssertEqual(festival.greeting, "节日快乐")
+        for day in [26, 27] {
+            let current = date(2026, 9, day)
+            let greeting = MarketClosedGreeting.lines(
+                for: current, holidayName: MarketCalendar.holidayName(on: current, holidays: holidayDates)
+            )
+            XCTAssertEqual(greeting.headline, "假期愉快")
+            XCTAssertTrue(MarketClosedGreeting.greetings.contains(greeting.greeting))
+            XCTAssertFalse(MarketCalendar.isTradingDay(current, holidays: holidayDates))
+            XCTAssertTrue(MarketCalendar.isRestDay(current, holidays: holidayDates))
+        }
+    }
+
+    func testLunarFestivalMovesWithTheYearAndIgnoresHolidayLabel() {
+        let greeting = MarketClosedGreeting.lines(for: date(2025, 10, 6), holidayName: "国庆节")
+        XCTAssertEqual(greeting.headline, "中秋节")
+        XCTAssertEqual(greeting.greeting, "节日快乐")
+        let spring = MarketClosedGreeting.lines(for: date(2026, 2, 17), holidayName: "春节")
+        XCTAssertEqual(spring.headline, "春节")
+        let dragonBoat = MarketClosedGreeting.lines(for: date(2026, 6, 19), holidayName: "端午节")
+        XCTAssertEqual(dragonBoat.headline, "端午节")
+    }
+
+    func testOtherExtendedHolidaysDoNotRepeatFestivalGreeting() {
+        for (month, day, name) in [(1, 2, "元旦"), (5, 2, "劳动节"), (10, 2, "国庆节"), (2, 18, "春节")] {
+            let greeting = MarketClosedGreeting.lines(for: date(2026, month, day), holidayName: name)
+            XCTAssertEqual(greeting.headline, "假期愉快")
+            XCTAssertNotEqual(greeting.greeting, "节日快乐")
+        }
+    }
+
+    func testMidAutumnGreetingChangesAtBeijingMidnight() {
+        let midnight = calendar.date(from: DateComponents(year: 2026, month: 9, day: 26))!
+        let before = MarketClosedGreeting.lines(for: midnight.addingTimeInterval(-1), holidayName: "中秋节")
+        let after = MarketClosedGreeting.lines(for: midnight, holidayName: "中秋节")
+        XCTAssertEqual(before.headline, "中秋节")
+        XCTAssertEqual(after.headline, "假期愉快")
+    }
+
+    func testLeapEighthMonthDoesNotCelebrateMidAutumnAgain() {
+        let greeting = MarketClosedGreeting.lines(for: date(1995, 10, 9), holidayName: "中秋节")
+        XCTAssertEqual(greeting.headline, "假期愉快")
+    }
 }
 
 /// 当日盈亏的显示时段（用户要求：盘前、收盘后、非交易日都不显示）

@@ -562,6 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hoverPanel: HoverPanel?
     /// 右键人物弹出的 AI 聊天窗（懒创建）
     private var chatController: ClaudeChatController?
+    private let aiSignController = AISignController()
     /// 「自选与持仓」配置窗口（懒创建）
     private var watchlistSettings: WatchlistSettingsController?
     /// 「提醒管理」窗口（懒创建）
@@ -617,6 +618,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         loadSettings()
+        aiSignController.onChange = { [weak self] in
+            self?.updateFloatingCharacter()
+            self?.rebuildMenu()
+        }
         menu.delegate = self
         statusItem.menu = menu
         updateStatusTitle()
@@ -693,6 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKeyCenter.stop()
         accessibilityRestartTimer?.invalidate()
         chatController?.shutdown()
+        aiSignController.shutdown()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -961,6 +967,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let aiItem = NSMenuItem(title: "问 AI：当前行情…", action: #selector(askAIAboutMarket), keyEquivalent: "")
         aiItem.target = self
         menu.addItem(aiItem)
+
+        let signItem = NSMenuItem(title: "AI 举牌", action: nil, keyEquivalent: "")
+        let signMenu = NSMenu(title: "AI 举牌")
+        let signStatus = NSMenuItem(title: aiSignController.status, action: nil, keyEquivalent: "")
+        signStatus.isEnabled = false
+        signMenu.addItem(signStatus)
+        for (title, action) in [
+            ("设置 DeepSeek / 搜索…", #selector(showAISignSettings)),
+            ("立即刷新内容", #selector(refreshAISign)),
+            ("查看内容与来源…", #selector(showAISignDetails)),
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            signMenu.addItem(item)
+        }
+        signItem.submenu = signMenu
+        menu.addItem(signItem)
 
         // 紧挨着「问 AI」放：它是那件事的一个开关
         let holdingsToggle = NSMenuItem(
@@ -1700,10 +1723,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 休市时举牌显示的问候语；交易日返回 nil
     private func marketClosedGreeting() -> (headline: String, greeting: String)? {
-        guard !MarketCalendar.isTradingDay(Date(), holidays: holidays) else { return nil }
+        let now = Date()
+        guard !MarketCalendar.isTradingDay(now, holidays: holidays) else { return nil }
+        if let lines = aiSignController.lines(at: now, isTradingDay: false) { return lines }
         return MarketClosedGreeting.lines(
-            for: Date(),
-            holidayName: MarketCalendar.holidayName(on: Date(), holidays: holidays)
+            for: now,
+            holidayName: MarketCalendar.holidayName(on: now, holidays: holidays)
         )
     }
 
@@ -1732,6 +1757,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 「交易日显示价格与盈亏 / 休市显示问候语」的决策收在这一处
     private func updateFloatingCharacter() {
+        aiSignController.refreshIfNeeded(
+            canDisplay: isFloatingCharacterVisible && !MarketCalendar.isTradingDay(Date(), holidays: holidays)
+        )
         if let greeting = marketClosedGreeting() {
             floatingCharacterController.update(
                 price: greeting.headline,
@@ -1747,6 +1775,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 profitLossText: totalProfitLossText() ?? ""
             )
         }
+    }
+
+    @objc private func showAISignSettings() {
+        hotKeyCenter.stop()
+        defer { applyHotKeys() }
+        aiSignController.showSettings()
+    }
+
+    @objc private func refreshAISign() {
+        if aiSignController.settings.enabled {
+            aiSignController.refreshIfNeeded(canDisplay: true, force: true)
+        } else {
+            showAISignSettings()
+        }
+    }
+
+    @objc private func showAISignDetails() {
+        aiSignController.showDetails()
     }
 
     /// 组合当日盈亏文本（如 "-8,055"）。没有可统计的持仓时返回 nil，举牌退回单行。

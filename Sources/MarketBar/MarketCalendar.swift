@@ -134,9 +134,10 @@ enum MarketClosedGreeting {
         let day = calendar.dateComponents([.day], from: date).day ?? 0
 
         if let holidayName, !holidayName.isEmpty {
-            // 节日名里已经带「节」的就不再重复，如「中秋节」→「中秋节快乐」
-            let name = holidayName.hasSuffix("节") ? holidayName : "\(holidayName)节"
-            return (name, "节日快乐")
+            if let festival = festivalName(on: date, calendar: calendar) {
+                return (festival, "节日快乐")
+            }
+            return ("假期愉快", greetings[abs(day) % greetings.count])
         }
 
         let parts = calendar.dateComponents([.weekday], from: date)
@@ -144,5 +145,29 @@ enum MarketClosedGreeting {
             return ("周末愉快", greetings[abs(day) % greetings.count])
         }
         return (headlines[0], greetings[abs(day) % greetings.count])
+    }
+
+    /// 放假接口的名称覆盖整段假期，不能用它判断节日当天。
+    private static func festivalName(on date: Date, calendar: Calendar) -> String? {
+        var solar = Calendar(identifier: .gregorian)
+        solar.timeZone = calendar.timeZone
+        let parts = solar.dateComponents([.month, .day], from: date)
+        switch (parts.month, parts.day) {
+        case (1, 1): return "元旦"
+        case (5, 1): return "劳动节"
+        case (10, 1): return "国庆节"
+        default: break
+        }
+
+        var lunar = Calendar(identifier: .chinese)
+        lunar.timeZone = calendar.timeZone
+        let lunarParts = lunar.dateComponents([.month, .day], from: date)
+        guard lunarParts.isLeapMonth != true else { return nil }
+        switch (lunarParts.month, lunarParts.day) {
+        case (1, 1): return "春节"
+        case (5, 5): return "端午节"
+        case (8, 15): return "中秋节"
+        default: return nil
+        }
     }
 }
