@@ -231,7 +231,9 @@ bash scripts/build-dmg.sh
 自动完成 release 编译 → 生成 `.app` → 制作 DMG，产出在 `dist/`：
 
 - `MarketBar.app` — 应用包
-- `MarketBar-1.0.15.dmg` — 安装包（含 Applications 快捷方式，可拖拽安装）
+- `MarketBar-1.0.16.dmg` — 安装包（含 Applications 快捷方式，可拖拽安装）
+
+安装后可从菜单底部的 **「关于 MarketBar…」** 查看当前运行应用的版本号；若构建号与版本号不同，也会一并显示。
 
 ⚠️ 打包脚本会做本机 ad-hoc 签名，但未进行 Apple Developer ID 公证；从互联网下载的应用仍可能被 Gatekeeper 拦下。
 

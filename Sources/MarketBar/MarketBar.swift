@@ -1002,6 +1002,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         holdingsToggle.state = snapshotIncludesHoldings ? .on : .off
         menu.addItem(holdingsToggle)
         menu.addItem(NSMenuItem.separator())
+        let aboutItem = NSMenuItem(title: "关于 MarketBar…", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -1360,6 +1363,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderCenter.reload()
         rebuildMenu()
         refreshReminderListIfVisible()
+    }
+
+    @objc private func showAbout() {
+        AboutMarketBar.show()
     }
 
     @objc
