@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // MARK: - 调用参数
 
@@ -12,7 +13,7 @@ enum ClaudeChatInvocation {
     /// 代价是它**不再征求同意就能执行命令/改文件** —— 这是刻意的取舍，改动这里前先想清楚。
     /// `usesStreamInput` 为真时改用 `--input-format stream-json`：
     /// 那种模式下提示词**不走 argv**，而是作为一行 JSON 写进 stdin —— 这是给 CLI
-    /// 送图片的唯一途径（`-p` 只收纯文本）。
+    /// 送图片的途径（提示词位置参数只收纯文本；仍须 `--print` 启用非交互模式）。
     ///
     /// ⚠️ 实测：`--input-format stream-json` **必须**配 `--output-format stream-json`，
     /// 否则 CLI 直接报错退出。我们本来就是 stream-json 输出，正好对得上。
@@ -23,7 +24,7 @@ enum ClaudeChatInvocation {
         usesStreamInput: Bool = false
     ) -> [String] {
         var arguments = usesStreamInput
-            ? ["--input-format", "stream-json"]
+            ? ["--input-format", "stream-json", "--print"]
             : ["-p", prompt]
         arguments += isResume
             ? ["--resume", sessionID.uuidString]
@@ -181,6 +182,7 @@ enum ClaudeChatError: Error, Equatable {
     case commandFailed(status: Int32, stderrTail: String)
     case invalidResponse(String)
     case executableNotFound
+    case inputFailed(String)
 
     var message: String {
         switch self {
@@ -198,6 +200,8 @@ enum ClaudeChatError: Error, Equatable {
             return "无法解析 claude 的输出：\(detail)"
         case .executableNotFound:
             return "找不到 claude 命令，请用下面的「选择 claude 路径…」指定"
+        case .inputFailed(let detail):
+            return "无法发送图片消息给 claude：\(detail)"
         }
     }
 }
@@ -311,11 +315,15 @@ enum ClaudeProcessRunner {
         process.currentDirectoryURL = spec.workingDirectory
         // 不接 /dev/null 的话，claude CLI 会等 3 秒才继续（"no stdin data received in 3s"）
         // nil 时仍接 /dev/null：不接的话 CLI 会白等 3 秒等 stdin
-        process.standardInput = spec.stdin.map { pipe in
-            let handle = Pipe()
-            process.standardInput = handle
-            return handle
-        } ?? FileHandle.nullDevice
+        let inputPipe = spec.stdin == nil ? nil : Pipe()
+        if let inputPipe {
+            guard fcntl(inputPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+                throw ClaudeChatError.inputFailed("无法配置输入管道")
+            }
+            process.standardInput = inputPipe
+        } else {
+            process.standardInput = FileHandle.nullDevice
+        }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -353,6 +361,23 @@ enum ClaudeProcessRunner {
             }
         }
 
+        let inputFailure = LockedData()
+        if let inputPipe, let input = spec.stdin {
+            drains.enter()
+            // 图片通常超过管道容量；必须边写边读输出，不能阻塞超时/取消检查。
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { drains.leave() }
+                let writer = inputPipe.fileHandleForWriting
+                do {
+                    try writer.write(contentsOf: input)
+                    try writer.close()
+                } catch {
+                    inputFailure.append(Data(error.localizedDescription.utf8))
+                    try? writer.close()
+                }
+            }
+        }
+
         var failure: ClaudeChatError?
         do {
             try await waitForExit(process, timeout: timeout)
@@ -372,6 +397,9 @@ enum ClaudeProcessRunner {
         }
 
         if let failure { throw failure }
+        if process.terminationStatus == 0, !inputFailure.value.isEmpty {
+            throw ClaudeChatError.inputFailed(String(decoding: inputFailure.value, as: UTF8.self))
+        }
         return ClaudeProcessOutput(status: process.terminationStatus, stdout: stdout.value, stderr: stderr.value)
     }
 

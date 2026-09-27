@@ -87,36 +87,55 @@ final class ChatTranscriptTextView: NSTextView {
 
 /// 输入框：Enter 发送、Shift+Enter 换行
 final class ChatInputTextView: NSTextView {
+    var pasteboard: NSPasteboard = .general
     var onSend: (() -> Void)?
     /// 粘贴板里有图时走这条（不把图片当成附件名插进正文）
-    var onPasteImage: ((Data) -> Void)?
+    var onPasteImages: (([ClaudeChatImage]) -> Void)?
     /// 粘贴板上没有能认出来的图。给个反馈 —— 光「哔」一声用户不知道发生了什么
-    var onPasteWithoutImage: (() -> Void)?
+    var onPasteError: ((String) -> Void)?
     /// ⌘⌫ 清空已附的图
-    var onClearAttachments: (() -> Void)?
+    var onClearAttachments: (() -> Bool)?
+
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        [.png, .tiff, .fileURL] + NSImage.imageTypes.map { NSPasteboard.PasteboardType($0) } + super.readablePasteboardTypes
+    }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(paste(_:)) {
+            return isEditable && pasteboard.availableType(from: readablePasteboardTypes) != nil
+        }
+        return super.validateMenuItem(menuItem)
+    }
 
     /// ⚠️ 粘贴图片要拦在 `paste` 上：默认行为会把图片存成附件、往正文里插一个文件名，
     /// 那个名字对 CLI 毫无意义
     override func paste(_ sender: Any?) {
-        if let data = ChatImageAttachment.imageData(from: .general) {
-            onPasteImage?(data)
-            return
+        guard isEditable else { return }
+        let board = pasteboard
+        let type = board.availableType(from: readablePasteboardTypes) ?? .string
+        if !readSelection(from: board, type: type) {
+            onPasteError?("剪贴板没有可插入的文字或图片，也可点击「图片…」选择文件")
         }
-        // 粘贴板上没有我们认得的图（也可能只是一段文本要正常粘贴）：
-        // 先走默认粘贴，粘不出东西时再提示一句，免得用户只听到一声「哔」
-        let before = string
-        super.paste(sender)
-        if string == before, NSPasteboard.general.types?.isEmpty == false {
-            onPasteWithoutImage?()
+    }
+
+    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard isEditable else { return false }
+        do {
+            let images = try ChatImageAttachment.images(from: pboard)
+            if !images.isEmpty, let onPasteImages {
+                onPasteImages(images)
+                return true
+            }
+        } catch {
+            onPasteError?(error.localizedDescription)
+            return true
         }
+        return super.readSelection(from: pboard, type: type)
     }
 
     /// ⌘⌫ 清图；没有图时保持「删到行首」的原行为
     override func deleteToBeginningOfLine(_ sender: Any?) {
-        if let onClearAttachments {
-            onClearAttachments()
-            return
-        }
+        if isEditable, onClearAttachments?() == true { return }
         super.deleteToBeginningOfLine(sender)
     }
 
@@ -154,6 +173,9 @@ final class ClaudeChatView: NSView {
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
     private let newSessionButton = NSButton(title: "新会话", target: nil, action: nil)
     private let sessionButton = NSButton(title: "会话…", target: nil, action: nil)
+    private let imageButton = NSButton(title: "图片…", target: nil, action: nil)
+    private let attachmentStack = NSStackView()
+    private var attachmentHeightConstraint: NSLayoutConstraint?
     private let pickExecutableButton = NSButton(title: "选择 claude 路径…", target: nil, action: nil)
     private var inputHeightConstraint: NSLayoutConstraint?
     private var isSending = false
@@ -194,12 +216,15 @@ final class ClaudeChatView: NSView {
 
     func setStatus(_ text: String) {
         statusLabel.stringValue = text
+        statusLabel.toolTip = text
     }
 
     func setSending(_ sending: Bool) {
         isSending = sending
         sendButton.title = sending ? "停止" : "发送"
         input.isEditable = !sending
+        imageButton.isEnabled = !sending
+        for case let button as NSButton in attachmentStack.arrangedSubviews { button.isEnabled = !sending }
     }
 
     func setExecutableMissing(_ missing: Bool) {
@@ -246,23 +271,43 @@ final class ClaudeChatView: NSView {
         inputDidChange()
     }
 
+    func clearDraft() {
+        let status = statusLabel.stringValue
+        clearInput()
+        clearAttachments()
+        setStatus(status)
+    }
+
     // MARK: 图片
 
-    /// 粘贴进来的图：转成能发的附件。转不出来（不是图 / 格式不支持）就 beep
-    private func attachImage(_ data: Data) {
-        guard let image = ChatImageAttachment.make(from: data) else {
-            NSSound.beep()
-            setStatus("这张图转换失败（\(data.count) 字节），换一张试试")
+    @objc private func handleAttachImage() {
+        guard !isSending else { return }
+        let picker = NSOpenPanel()
+        picker.allowedContentTypes = [.image]
+        picker.canChooseDirectories = false
+        picker.allowsMultipleSelection = true
+        picker.message = "每条最多 4 张；大图会自动缩小。也可在输入框按 ⌘V 粘贴。"
+        guard picker.runModal() == .OK else { return }
+        do { attachImages(try ChatImageAttachment.images(from: picker.urls)) }
+        catch { setStatus(error.localizedDescription) }
+        focusInput()
+    }
+
+    func attachImages(_ images: [ClaudeChatImage]) {
+        guard !isSending else { return }
+        guard attachedImages.count + images.count <= ChatImageAttachment.maximumCount else {
+            setStatus(ChatImageAttachment.AttachmentError.tooMany.localizedDescription)
             return
         }
-        attachedImages.append(image)
+        attachedImages.append(contentsOf: images)
         updateAttachmentStatus()
     }
 
     /// 没有图时什么都不做 —— 输入框的 ⌘⌫ 要靠这个判断该不该退回「删到行首」
-    private func clearAttachmentsIfAny() {
-        guard !attachedImages.isEmpty else { return }
+    private func clearAttachmentsIfAny() -> Bool {
+        guard !attachedImages.isEmpty, !isSending else { return false }
         clearAttachments()
+        return true
     }
 
     private func clearAttachments() {
@@ -270,8 +315,31 @@ final class ClaudeChatView: NSView {
         updateAttachmentStatus()
     }
 
-    /// 附件状态借用标题栏那行：不改布局，也不用再塞一个按钮
+    @objc private func removeAttachment(_ sender: NSButton) {
+        guard !isSending, attachedImages.indices.contains(sender.tag) else { return }
+        attachedImages.remove(at: sender.tag)
+        updateAttachmentStatus()
+        focusInput()
+    }
+
     private func updateAttachmentStatus() {
+        for view in attachmentStack.arrangedSubviews {
+            attachmentStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        for (index, image) in attachedImages.enumerated() {
+            let button = NSButton(title: "", target: self, action: #selector(removeAttachment(_:)))
+            button.image = Data(base64Encoded: image.base64).flatMap(NSImage.init(data:))
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            button.toolTip = "图片 \(index + 1)：点击移除"
+            button.setAccessibilityLabel("移除图片 \(index + 1)")
+            button.tag = index
+            button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            attachmentStack.addArrangedSubview(button)
+        }
+        attachmentHeightConstraint?.constant = attachedImages.isEmpty ? 0 : 48
         guard !attachedImages.isEmpty else {
             setStatus("复用同一个会话")
             return
@@ -306,6 +374,8 @@ final class ClaudeChatView: NSView {
         newSessionButton.action = #selector(handleNewSession)
         sessionButton.target = self
         sessionButton.action = #selector(handleEditSession)
+        imageButton.target = self
+        imageButton.action = #selector(handleAttachImage)
         pickExecutableButton.target = self
         pickExecutableButton.action = #selector(handlePickExecutable)
         pickExecutableButton.isHidden = true
@@ -360,11 +430,9 @@ final class ClaudeChatView: NSView {
         input.smartInsertDeleteEnabled = false
         input.allowsUndo = true
         input.onSend = { [weak self] in self?.handleSend() }
-        input.onPasteImage = { [weak self] data in self?.attachImage(data) }
-        input.onPasteWithoutImage = { [weak self] in
-            self?.setStatus("粘贴板上没有能识别的图片（图片数据 / 图片文件都试过了）")
-        }
-        input.onClearAttachments = { [weak self] in self?.clearAttachmentsIfAny() }
+        input.onPasteImages = { [weak self] images in self?.attachImages(images) }
+        input.onPasteError = { [weak self] error in self?.setStatus(error) }
+        input.onClearAttachments = { [weak self] in self?.clearAttachmentsIfAny() ?? false }
         input.delegate = self
 
         inputPlaceholder.font = Self.bodyFont
@@ -384,7 +452,14 @@ final class ClaudeChatView: NSView {
         sendButton.target = self
         sendButton.action = #selector(handleSendOrCancel)
 
-        for view in [header, headerDivider, transcriptScroll, inputDivider, inputScroll, sendButton] {
+        imageButton.isBordered = false
+        imageButton.font = .systemFont(ofSize: 12, weight: .medium)
+        imageButton.contentTintColor = ClaudeChatPalette.title
+
+        attachmentStack.orientation = .horizontal
+        attachmentStack.spacing = 8
+        attachmentStack.alignment = .centerY
+        for view in [header, headerDivider, transcriptScroll, inputDivider, inputScroll, sendButton, imageButton, attachmentStack] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -401,6 +476,8 @@ final class ClaudeChatView: NSView {
         )
         let heightConstraint = inputScroll.heightAnchor.constraint(equalToConstant: inputHeight)
         inputHeightConstraint = heightConstraint
+        let attachmentHeight = attachmentStack.heightAnchor.constraint(equalToConstant: 0)
+        attachmentHeightConstraint = attachmentHeight
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor),
@@ -412,7 +489,7 @@ final class ClaudeChatView: NSView {
             titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             statusLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 8),
             statusLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: sessionButton.leadingAnchor, constant: -8),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: imageButton.leadingAnchor, constant: -8),
 
             pickExecutableButton.trailingAnchor.constraint(equalTo: newSessionButton.leadingAnchor, constant: -12),
             pickExecutableButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
@@ -420,6 +497,8 @@ final class ClaudeChatView: NSView {
             newSessionButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             sessionButton.trailingAnchor.constraint(equalTo: newSessionButton.leadingAnchor, constant: -12),
             sessionButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            imageButton.trailingAnchor.constraint(equalTo: sessionButton.leadingAnchor, constant: -12),
+            imageButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
             headerDivider.topAnchor.constraint(equalTo: header.bottomAnchor),
             headerDivider.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -434,7 +513,11 @@ final class ClaudeChatView: NSView {
             inputDivider.leadingAnchor.constraint(equalTo: leadingAnchor),
             inputDivider.trailingAnchor.constraint(equalTo: trailingAnchor),
             inputDivider.heightAnchor.constraint(equalToConstant: 0.5),
-            inputDivider.bottomAnchor.constraint(equalTo: inputScroll.topAnchor, constant: -10),
+            inputDivider.bottomAnchor.constraint(equalTo: attachmentStack.topAnchor, constant: -6),
+            attachmentStack.bottomAnchor.constraint(equalTo: inputScroll.topAnchor, constant: -4),
+            attachmentStack.leadingAnchor.constraint(equalTo: inputScroll.leadingAnchor),
+            attachmentStack.trailingAnchor.constraint(lessThanOrEqualTo: inputScroll.trailingAnchor),
+            attachmentHeight,
 
             inputScroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             inputScroll.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -10),
@@ -486,10 +569,7 @@ final class ClaudeChatView: NSView {
         // 只有图没有字也允许发 —— 「看看这张」本来就常常不用打字
         guard !text.isEmpty || !attachedImages.isEmpty else { return }
 
-        let images = attachedImages
-        clearInput()
-        clearAttachments()
-        onSend?(text, images)
+        onSend?(text, attachedImages)
     }
 
     /// 输入内容变化：占位符显隐 + 输入框高度

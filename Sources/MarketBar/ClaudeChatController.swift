@@ -16,6 +16,7 @@ final class ClaudeChatController {
     private var resolvedExecutable: URL?
     private var workingDirectory: URL
     private var currentTask: Task<Void, Never>?
+    private var requestID = UUID()
     private var statusTimer: Timer?
     private var streamDisplayTimer: Timer?
     private var sendStartedAt: Date?
@@ -255,20 +256,26 @@ final class ClaudeChatController {
             appendMessage(ChatMessage(role: .user, text: text + suffix))
         }
         beginSendingStatus()
+        requestID = UUID()
+        let token = requestID
 
         currentTask = Task { [weak self] in
             guard let self else { return }
-            await self.performSend(text, images: images, isRetry: isRetry)
+            let succeeded = await self.performSend(text, images: images, isRetry: isRetry, token: token)
+            guard self.requestID == token else { return }
+            if succeeded { self.chatView?.clearDraft() }
             self.finishSendingStatus()
             self.currentTask = nil
         }
     }
 
-    private func performSend(_ text: String, images: [ClaudeChatImage], isRetry: Bool) async {
-        guard let executable = await resolveExecutable() else {
+    private func performSend(_ text: String, images: [ClaudeChatImage], isRetry: Bool, token: UUID) async -> Bool {
+        let resolved = await resolveExecutable()
+        guard requestID == token, !Task.isCancelled else { return false }
+        guard let executable = resolved else {
             chatView?.setExecutableMissing(true)
             appendMessage(ChatMessage(role: .error, text: ClaudeChatError.executableNotFound.message))
-            return
+            return false
         }
         chatView?.setExecutableMissing(false)
 
@@ -296,6 +303,7 @@ final class ClaudeChatController {
                 timeout: ClaudeChatTiming.responseTimeout,
                 onLine: { line in stream.consume(line) }
             )
+            guard requestID == token, !Task.isCancelled else { return false }
             endStreamDisplay()
 
             if output.status != 0 {
@@ -304,9 +312,7 @@ final class ClaudeChatController {
                     sessionState.sessionBroke()
                     saveSession()
                     appendMessage(ChatMessage(role: .system, text: ClaudeChatError.sessionNotFound.message))
-                    // 重试时**不带图**：会话失效与图片无关，重发一遍图只会白花一次钱
-                    await performSend(text, images: [], isRetry: true)
-                    return
+                    return await performSend(text, images: images, isRetry: true, token: token)
                 }
                 throw ClaudeChatError.commandFailed(status: output.status, stderrTail: output.stderrTail)
             }
@@ -322,7 +328,7 @@ final class ClaudeChatController {
                 finalizeStream(stream, fallbackText: nil, isError: true)
                 appendMessage(ChatMessage(role: .error, text: result.text ?? "未知错误"))
                 chatView?.setStatus("出错")
-                return
+                return false
             }
 
             let replyText = snapshot.text.isEmpty ? (result.text ?? "") : snapshot.text
@@ -339,16 +345,20 @@ final class ClaudeChatController {
             )
             persist(ChatMessage(role: .assistant, text: replyText, tokens: tokens))
             chatView?.setStatus(ChatTokenFormat.text(tokens) ?? "复用同一个会话")
+            return true
         } catch let error as ClaudeChatError {
+            guard requestID == token else { return false }
             // 已经流出来的内容保留，后面再接错误说明
             finalizeStream(stream, fallbackText: nil, isError: true)
             appendMessage(ChatMessage(role: .error, text: error.message))
             chatView?.setStatus(error == .cancelled ? "已停止" : "出错")
         } catch {
+            guard requestID == token else { return false }
             finalizeStream(stream, fallbackText: nil, isError: true)
             appendMessage(ChatMessage(role: .error, text: error.localizedDescription))
             chatView?.setStatus("出错")
         }
+        return false
     }
 
     /// 出错/取消时把已经流出来的内容定稿（不丢），没有内容就把流出块清掉
@@ -369,9 +379,12 @@ final class ClaudeChatController {
     }
 
     private func cancelInFlight() {
+        let wasSending = currentTask != nil
+        requestID = UUID()
         currentTask?.cancel()
         currentTask = nil
         finishSendingStatus()
+        if wasSending { chatView?.setStatus("已停止；草稿已保留") }
     }
 
     /// 显示 + 落盘（历史就靠这份记录，见 ChatTranscriptStore）
@@ -416,9 +429,10 @@ final class ClaudeChatController {
     /// 逐行往主线程跳会有乱序风险（增量一乱序就成了乱码），所以用拉取而不是推送。
     private func beginStreamDisplay(stream: LockedStreamState, startedAt: Date) {
         endStreamDisplay()
+        let token = requestID
         streamDisplayTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.requestID == token else { return }
                 let snapshot = stream.snapshot()
                 self.chatView?.renderStream(
                     thinking: snapshot.thinking,

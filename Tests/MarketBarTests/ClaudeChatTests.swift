@@ -369,7 +369,7 @@ final class UnreadBadgeTests: XCTestCase {
 final class ClaudeChatImageInputTests: XCTestCase {
     private let sessionID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
 
-    func testStreamInputReplacesThePrintFlag() {
+    func testStreamInputKeepsPromptOutOfArguments() {
         let arguments = ClaudeChatInvocation.arguments(
             prompt: "这张图是什么", sessionID: sessionID, isResume: false, usesStreamInput: true
         )
@@ -533,7 +533,7 @@ final class ChatImageAttachmentTests: XCTestCase {
         pasteboard.clearContents()
         pasteboard.writeObjects([file as NSURL])
 
-        XCTAssertNotNil(ChatImageAttachment.imageData(from: pasteboard), "文件 URL 也要能取出图")
+        XCTAssertEqual(try ChatImageAttachment.images(from: pasteboard).count, 1, "文件 URL 也要能取出图")
     }
 
     /// 拖进来一个 .txt 不该被当成图
@@ -547,7 +547,7 @@ final class ChatImageAttachmentTests: XCTestCase {
         pasteboard.clearContents()
         pasteboard.writeObjects([file as NSURL])
 
-        XCTAssertNil(ChatImageAttachment.imageData(from: pasteboard))
+        XCTAssertTrue(try ChatImageAttachment.images(from: pasteboard).isEmpty)
     }
 
     private func makeTinyPNG() -> Data? {
