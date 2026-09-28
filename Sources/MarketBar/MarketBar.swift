@@ -569,6 +569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var goldHistoryRecorder = GoldHistoryRecorder { [service] provider in
         await service.fetchPriceInfo(for: provider)
     }
+    private var goldTrendController: GoldTrendWindowController?
     private let floatingCharacterController = FloatingCharacterController()
 
     private var selectedProvider: GoldProvider = .zheShang
@@ -726,6 +727,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
     func applicationWillTerminate(_ notification: Notification) {
+        goldTrendController?.close()
         goldHistoryRecorder.stop()
         hotKeyCenter.stop()
         accessibilityRestartTimer?.invalidate()
@@ -887,6 +889,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             && chatController?.isVisible != true
             && watchlistSettings?.isVisible != true
             && reminderList?.isVisible != true
+            && goldTrendController?.isVisible != true
         guard accessibilityRestartPolicy.shouldRestart(
             trusted: UnreadBadge.isAccessibilityAuthorized(), canRestart: canRestart
         ) else { return }
@@ -955,7 +958,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.setSubmenu(refreshSubmenu, for: refreshMenuItem)
         menu.addItem(refreshMenuItem)
 
-        let historyItem = NSMenuItem(title: "金价历史记录…", action: #selector(showGoldHistoryStatus), keyEquivalent: "")
+        let trendItem = NSMenuItem(title: "金价走势…", action: #selector(showGoldTrend), keyEquivalent: "")
+        trendItem.target = self
+        menu.addItem(trendItem)
+        let historyItem = NSMenuItem(title: "金价记录状态…", action: #selector(showGoldHistoryStatus), keyEquivalent: "")
         historyItem.target = self
         menu.addItem(historyItem)
 
@@ -1089,6 +1095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     } ?? "（等待首次有效报价）"
                     return "\(item.provider.displayName)：\(item.count) 条 \(span)"
                 }
+
                 alert.informativeText = (
                     ["每家银行每分钟最多保存一条，仅记录程序运行时取到的有效价格。"]
                     + lines
@@ -1102,6 +1109,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         }
+    }
+
+    @objc private func showGoldTrend() {
+        let controller = goldTrendController ?? GoldTrendWindowController { [weak self] provider, start, end in
+            guard let self else { throw GoldHistoryError.database("应用已关闭") }
+            return try await self.goldHistoryRecorder.trend(provider: provider, from: start, to: end)
+        }
+        goldTrendController = controller
+        controller.show(provider: selectedProvider)
     }
 
     @objc

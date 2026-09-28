@@ -76,6 +76,12 @@ final class GoldHistoryRecorder {
         return result
     }
 
+    func trend(provider: GoldProvider, from start: Date, to end: Date) async throws -> GoldTrend {
+        guard let store else { throw GoldHistoryError.database(lastError ?? "数据库尚未建立") }
+        let samples = try await store.samples(provider: provider, since: start, until: end)
+        return GoldTrend(provider: provider, start: start, end: end, samples: samples)
+    }
+
     private func report(_ error: Error) {
         lastError = error.localizedDescription
         NSLog("MarketBar: gold history storage failed: %@", error.localizedDescription)

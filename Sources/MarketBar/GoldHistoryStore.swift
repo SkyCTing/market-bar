@@ -15,7 +15,7 @@ enum GoldHistoryError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidSample: return "金价或采集时间无效，未保存历史记录"
-        case .invalidRange: return "历史记录的查询时间范围无效"
+        case .invalidRange: return "查询时间无效：起点不得晚于终点，自选范围不能超过一年"
         case .database(let detail): return "无法读写金价历史数据库：\(detail)"
         }
     }
