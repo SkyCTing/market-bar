@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor
 final class StockTrendPlot: NSView {
+    var decimalPlaces = 2 { didSet { needsDisplay = true } }
     var trend: StockTrend? {
         didSet {
             segments = trend?.segments ?? []
@@ -29,6 +30,22 @@ final class StockTrendPlot: NSView {
     private var plot: NSRect {
         NSRect(x: left, y: bottom, width: max(1, bounds.width - left - right),
                height: max(1, bounds.height - bottom - top))
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHover(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        updateHover(at: NSPoint(x: -1, y: -1))
     }
 
     func updateHover(at point: NSPoint) {
@@ -65,9 +82,14 @@ final class StockTrendPlot: NSView {
         guard let trend, let high = trend.high, let low = trend.low,
               let first = trend.points.first, let last = trend.points.last,
               positions.count == trend.points.count else { return }
-        let span = max(high.price - low.price, high.price * 0.002, 0.01)
-        let minPrice = low.price - span * 0.1
+        let upper = trend.range.isCandlestick ? trend.highestCandle?.high ?? high.price : high.price
+        let lower = trend.range.isCandlestick ? trend.lowestCandle?.low ?? low.price : low.price
+        let span = max(upper - lower, upper * 0.002, pow(10, -Double(decimalPlaces)))
+        let minPrice = lower - span * 0.1
         let priceRange = span * 1.2
+        func y(_ price: Double) -> CGFloat {
+            plot.minY + plot.height * CGFloat((price - minPrice) / priceRange)
+        }
         func location(_ item: StockTrendPoint) -> NSPoint? {
             guard let fraction = positionsByDate[item.date] else {
                 NSLog("MarketBar: stock chart point missing from trading-time axis")
@@ -75,7 +97,7 @@ final class StockTrendPlot: NSView {
             }
             return NSPoint(
                 x: plot.minX + plot.width * CGFloat(fraction),
-                y: plot.minY + plot.height * CGFloat((item.price - minPrice) / priceRange)
+                y: y(item.price)
             )
         }
         let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
@@ -87,32 +109,56 @@ final class StockTrendPlot: NSView {
             line.lineWidth = 0.5
             NSColor.white.withAlphaComponent(0.12).setStroke()
             line.stroke()
-            (String(format: "%.2f", minPrice + priceRange * Double(step) / 2) as NSString).draw(
+            (StockTrendPriceFormat.text(minPrice + priceRange * Double(step) / 2,
+                                        decimalPlaces: decimalPlaces) as NSString).draw(
                 at: NSPoint(x: 1, y: y - 5),
                 withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
             )
         }
-        let pathColor = NSColor(calibratedRed: 0.92, green: 0.7, blue: 0.34, alpha: 1)
-        for segment in segments {
-            let path = NSBezierPath()
-            for (index, item) in segment.enumerated() {
-                guard let position = location(item) else { return }
-                if index == 0 { path.move(to: position) }
-                else { path.line(to: position) }
+        if trend.range.isCandlestick {
+            guard trend.candles.count == trend.points.count else { return }
+            let width = min(14, max(3, plot.width / CGFloat(trend.candles.count) * 0.65))
+            for bar in trend.candles {
+                guard let fraction = positionsByDate[bar.date] else { return }
+                let x = plot.minX + plot.width * CGFloat(fraction)
+                let color = bar.close > bar.open ? NSColor.systemRed
+                    : bar.close < bar.open ? NSColor.systemGreen : NSColor.systemGray
+                color.setStroke()
+                let wick = NSBezierPath()
+                wick.move(to: NSPoint(x: x, y: y(bar.low)))
+                wick.line(to: NSPoint(x: x, y: y(bar.high)))
+                wick.lineWidth = 1
+                wick.stroke()
+                color.setFill()
+                let height = abs(y(bar.close) - y(bar.open))
+                NSBezierPath(rect: NSRect(
+                    x: x - width / 2, y: min(y(bar.open), y(bar.close)),
+                    width: width, height: max(1.5, height)
+                )).fill()
             }
-            path.lineWidth = 1.5
-            pathColor.setStroke()
-            path.stroke()
-            if segment.count == 1 {
-                guard let p = location(segment[0]) else { return }
-                pathColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)).fill()
+        } else {
+            let pathColor = NSColor(calibratedRed: 0.92, green: 0.7, blue: 0.34, alpha: 1)
+            for segment in segments {
+                let path = NSBezierPath()
+                for (index, item) in segment.enumerated() {
+                    guard let position = location(item) else { return }
+                    if index == 0 { path.move(to: position) }
+                    else { path.line(to: position) }
+                }
+                path.lineWidth = 1.5
+                pathColor.setStroke()
+                path.stroke()
+                if segment.count == 1 {
+                    guard let p = location(segment[0]) else { return }
+                    pathColor.setFill()
+                    NSBezierPath(ovalIn: NSRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)).fill()
+                }
             }
         }
         let formatter = DateFormatter()
         formatter.timeZone = trend.market == .hongKong
             ? TimeZone(identifier: "Asia/Hong_Kong") : TradingSession.timeZone
-        formatter.dateFormat = trend.range.isDailyClose ? "MM/dd" : "MM/dd HH:mm"
+        formatter.dateFormat = trend.range.usesPeriodBars ? "MM/dd" : "MM/dd HH:mm"
         for (date, x) in [(first.date, plot.minX), (last.date, plot.maxX)] {
             let label = formatter.string(from: date) as NSString
             let width = label.size(withAttributes: [.font: font]).width
@@ -133,21 +179,30 @@ private final class StockTrendPanel: NSPanel {
 
 @MainActor
 final class StockTrendPopover {
+    private static let inlineRanges: [StockTrendRange] = [.today, .fiveDays, .month]
     private let window: StockTrendPanel
     private let titleLabel = NSTextField(labelWithString: "")
+    private let latestPriceLabel = NSTextField(labelWithString: "")
+    private let klineButton = NSButton(title: "K 线图…", target: nil, action: nil)
     private let rangeControl = NSSegmentedControl()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let plot = StockTrendPlot()
+    private var decimalPlaces = 2
     var onRangeChange: (() -> Void)?
+    var onOpenKline: ((StockQuote) -> Void)?
+    private var latestQuote: StockQuote?
     private(set) var code: String?
-    var range: StockTrendRange { StockTrendRange(rawValue: rangeControl.selectedSegment) ?? .today }
+    var range: StockTrendRange {
+        let index = rangeControl.selectedSegment
+        return Self.inlineRanges.indices.contains(index) ? Self.inlineRanges[index] : .today
+    }
     var frame: NSRect { window.frame }
     var isVisible: Bool { window.isVisible }
 
     init() {
         window = StockTrendPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 215),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 245),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
@@ -168,28 +223,38 @@ final class StockTrendPopover {
         content.layer?.borderWidth = 0.5
         window.contentView = content
         content.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        content.heightAnchor.constraint(equalToConstant: 215).isActive = true
+        content.heightAnchor.constraint(equalToConstant: 245).isActive = true
 
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         titleLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendTitle")
+        latestPriceLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+        latestPriceLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendLatestPrice")
+        klineButton.isBordered = false
+        klineButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        klineButton.contentTintColor = NSColor(calibratedRed: 0.94, green: 0.72, blue: 0.34, alpha: 1)
+        klineButton.identifier = NSUserInterfaceItemIdentifier("openStockKline")
+        klineButton.target = self
+        klineButton.action = #selector(openKline)
         summaryLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         summaryLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendSummary")
         detailLabel.font = .systemFont(ofSize: 10)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendDetail")
         detailLabel.lineBreakMode = .byTruncatingTail
-        rangeControl.segmentCount = StockTrendRange.allCases.count
+        rangeControl.segmentCount = Self.inlineRanges.count
         rangeControl.appearance = NSAppearance(named: .darkAqua)
-        for range in StockTrendRange.allCases { rangeControl.setLabel(range.title, forSegment: range.rawValue) }
+        for (index, range) in Self.inlineRanges.enumerated() {
+            rangeControl.setLabel(range.title, forSegment: index)
+        }
         rangeControl.selectedSegment = StockTrendRange.today.rawValue
         rangeControl.controlSize = .small
         rangeControl.target = self
         rangeControl.action = #selector(changeRange)
         plot.onHover = { [weak self] point in self?.showDetail(point) }
 
-        for view in [titleLabel, summaryLabel, detailLabel, rangeControl, plot] {
+        for view in [titleLabel, latestPriceLabel, klineButton, summaryLabel, detailLabel, rangeControl, plot] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -199,24 +264,32 @@ final class StockTrendPopover {
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rangeControl.leadingAnchor, constant: -6),
             rangeControl.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             rangeControl.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            summaryLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            latestPriceLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7),
+            latestPriceLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            latestPriceLabel.trailingAnchor.constraint(lessThanOrEqualTo: klineButton.leadingAnchor, constant: -8),
+            klineButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            klineButton.centerYAnchor.constraint(equalTo: latestPriceLabel.centerYAnchor),
             summaryLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             summaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
             plot.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             plot.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            plot.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 7),
-            plot.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -5),
+            plot.topAnchor.constraint(equalTo: latestPriceLabel.bottomAnchor, constant: 6),
+            plot.bottomAnchor.constraint(equalTo: summaryLabel.topAnchor, constant: -5),
+            summaryLabel.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -6),
             detailLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             detailLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             detailLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
         ])
     }
 
-    func show(code: String, name: String, market: StockMarket, row: NSRect, alongside panel: NSRect) {
+    func show(code: String, name: String, market: StockMarket, quote: StockQuote,
+              row: NSRect, alongside panel: NSRect) {
         if self.code != code { rangeControl.selectedSegment = StockTrendRange.today.rawValue }
         self.code = code
         titleLabel.stringValue = "\(name) · \(market == .hongKong ? "HK" : "A")"
         titleLabel.toolTip = "\(name) (\(code))"
+        klineButton.isHidden = code.hasPrefix("bj")
+        updateQuote(quote, market: market)
         let size = window.frame.size
         let screen = NSScreen.screens.first { $0.frame.intersects(panel) } ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -234,10 +307,23 @@ final class StockTrendPopover {
         window.orderFrontRegardless()
     }
 
+    func updateQuote(_ quote: StockQuote, market: StockMarket) {
+        latestQuote = quote
+        latestPriceLabel.stringValue = "最近价格 \(quote.price) \(market.currency)"
+        latestPriceLabel.toolTip = quote.quotedAt.map {
+            "报价时间：\(market.formattedQuoteTime($0))（\(market.timeZoneName)）"
+        } ?? "报价时间未知"
+        let precision = StockTrendPriceFormat.decimalPlaces(for: quote)
+        guard decimalPlaces != precision else { return }
+        decimalPlaces = precision
+        plot.decimalPlaces = precision
+        if let trend = plot.trend { show(trend) }
+    }
+
     func showLoading() {
         plot.trend = nil
         summaryLabel.stringValue = "正在读取\(range.title)走势…"
-        detailLabel.stringValue = "价格折线 · 压缩午休/隔夜；日线未复权、今日可能未收盘"
+        detailLabel.stringValue = "价格折线 · 休市时段已压缩；日线未复权"
     }
 
     func show(_ trend: StockTrend) {
@@ -247,7 +333,11 @@ final class StockTrendPopover {
             return
         }
         let type = trend.range.isDailyClose ? "日线" : "价格"
-        summaryLabel.stringValue = String(format: "最高%@ %.2f · 最低%@ %.2f %@", type, high.price, type, low.price, trend.market.currency)
+        summaryLabel.stringValue = String(
+            format: "最高%@ %@ · 最低%@ %@ %@", type,
+            StockTrendPriceFormat.text(high.price, decimalPlaces: decimalPlaces), type,
+            StockTrendPriceFormat.text(low.price, decimalPlaces: decimalPlaces), trend.market.currency
+        )
         let timestamp = trend.market.formattedQuoteTime(latest.date)
         detailLabel.stringValue = "\(trend.market.timeZoneName) · 截至 \(timestamp) · \(trend.points.count) 点 · 交易时间折线"
         detailLabel.toolTip = detailLabel.stringValue
@@ -272,16 +362,23 @@ final class StockTrendPopover {
         guard let trend = plot.trend else { return }
         guard let point else { show(trend); return }
         detailLabel.stringValue = String(
-            format: "%@ %@ · %.2f %@", trend.market.timeZoneName,
-            trend.market.formattedQuoteTime(point.date), point.price, trend.market.currency
+            format: "%@ %@ · %@ %@", trend.market.timeZoneName,
+            trend.market.formattedQuoteTime(point.date),
+            StockTrendPriceFormat.text(point.price, decimalPlaces: decimalPlaces), trend.market.currency
         )
         detailLabel.toolTip = detailLabel.stringValue
     }
 
     @objc private func changeRange() { onRangeChange?() }
 
+    @objc private func openKline() {
+        guard let latestQuote else { return }
+        onOpenKline?(latestQuote)
+    }
+
     func dismiss() {
         code = nil
+        latestQuote = nil
         plot.trend = nil
         window.orderOut(nil)
     }

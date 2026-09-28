@@ -1,18 +1,54 @@
 import Foundation
 
+enum StockTrendPriceFormat {
+    static func decimalPlaces(for quote: StockQuote) -> Int {
+        guard quote.numericPrice != nil else { return 3 }
+        let digits = quote.price.split(separator: ".", omittingEmptySubsequences: false).dropFirst().first?.count ?? 0
+        return max(2, min(6, digits))
+    }
+
+    static func text(_ price: Double, decimalPlaces: Int) -> String {
+        String(format: "%.*f", decimalPlaces, price)
+    }
+}
+
 enum StockTrendRange: Int, CaseIterable, Sendable {
-    case today, fiveDays, month
+    case today, fiveDays, month, dailyCandles, weeklyCandles, monthlyCandles
 
     var title: String {
         switch self {
         case .today: "当日"
         case .fiveDays: "近5日"
         case .month: "近1月"
+        case .dailyCandles: "日 K"
+        case .weeklyCandles: "周 K"
+        case .monthlyCandles: "月 K"
         }
     }
 
+    var usesPeriodBars: Bool { self == .month || isCandlestick }
+    var isCandlestick: Bool {
+        switch self {
+        case .dailyCandles, .weeklyCandles, .monthlyCandles: true
+        default: false
+        }
+    }
     var isDailyClose: Bool { self == .month }
-    var cacheSeconds: TimeInterval { self == .today ? 60 : 600 }
+    var cacheSeconds: TimeInterval {
+        switch self {
+        case .today, .dailyCandles: 60
+        case .weeklyCandles: 300
+        default: 600
+        }
+    }
+}
+
+struct StockCandle: Equatable, Sendable {
+    let date: Date
+    let open: Double
+    let high: Double
+    let low: Double
+    let close: Double
 }
 
 struct StockTrendPoint: Equatable, Sendable {
@@ -25,10 +61,26 @@ struct StockTrend: Sendable {
     let market: StockMarket
     let range: StockTrendRange
     let points: [StockTrendPoint]
+    let candles: [StockCandle]
+
+    init(code: String, market: StockMarket, range: StockTrendRange,
+         points: [StockTrendPoint], candles: [StockCandle] = []) {
+        self.code = code
+        self.market = market
+        self.range = range
+        self.points = points
+        self.candles = candles
+    }
 
     var high: StockTrendPoint? { points.max { $0.price < $1.price } }
     var low: StockTrendPoint? { points.min { $0.price < $1.price } }
     var latest: StockTrendPoint? { points.last }
+    var highestCandle: StockCandle? { candles.max { $0.high < $1.high } }
+    var lowestCandle: StockCandle? { candles.min { $0.low < $1.low } }
+
+    func displaying(_ range: StockTrendRange) -> StockTrend {
+        StockTrend(code: code, market: market, range: range, points: points, candles: candles)
+    }
 
     private var tradingAxis: (slots: [Int], total: Int)? {
         var rankByDate: [String: Int] = [:]
@@ -47,7 +99,7 @@ struct StockTrend: Sendable {
     /// A gap during an open session still occupies its missing minute slots.
     var plotFractions: [Double] {
         guard !points.isEmpty else { return [] }
-        if range.isDailyClose {
+        if range.usesPeriodBars {
             return points.indices.map { Double($0) / Double(max(1, points.count - 1)) }
         }
         guard let tradingAxis else { return [] }
@@ -56,7 +108,7 @@ struct StockTrend: Sendable {
 
     var segments: [[StockTrendPoint]] {
         guard !points.isEmpty else { return [] }
-        if range.isDailyClose { return [points] }
+        if range.usesPeriodBars { return [points] }
         guard let tradingAxis else { return points.map { [$0] } }
         var result: [[StockTrendPoint]] = []
         var segment: [StockTrendPoint] = [points[0]]
@@ -125,21 +177,25 @@ actor StockTrendService {
         self.transport = transport
     }
 
-    func fetch(code: String, range: StockTrendRange, at now: Date = Date()) async throws -> StockTrend {
+    func fetch(code: String, range: StockTrendRange, at now: Date = Date(), force: Bool = false) async throws -> StockTrend {
         guard WatchlistDraft.isValidCode(code), let market = StockMarket.forCode(code),
               market != .unitedStates else { throw StockTrendError.unsupported }
         guard !code.hasPrefix("bj") else { throw StockTrendError.unsupportedBeijing }
-        let key = Key(code: code, range: range)
-        if let cached = cache[key], now.timeIntervalSince(cached.loadedAt) >= 0,
-           now.timeIntervalSince(cached.loadedAt) < range.cacheSeconds { return cached.trend }
-        if let inFlight = inFlight[key] { return try await inFlight.value }
+        let requestRange = range == .dailyCandles ? StockTrendRange.month : range
+        let key = Key(code: code, range: requestRange)
+        if !force, let cached = cache[key], now.timeIntervalSince(cached.loadedAt) >= 0,
+           now.timeIntervalSince(cached.loadedAt) < range.cacheSeconds { return cached.trend.displaying(range) }
+        if let inFlight = inFlight[key] { return try await inFlight.value.displaying(range) }
         let transport = transport
         let task = Task {
             let path: String
-            switch range {
+            switch requestRange {
             case .today: path = "minute/query?code=\(code)"
             case .fiveDays: path = "day/query?code=\(code)"
             case .month: path = "kline/kline?param=\(code),day,,,31"
+            case .weeklyCandles: path = "kline/kline?param=\(code),week,,,52"
+            case .monthlyCandles: path = "kline/kline?param=\(code),month,,,24"
+            case .dailyCandles: preconditionFailure("Daily candles share the month endpoint")
             }
             guard let url = URL(string: "https://web.ifzq.gtimg.cn/appstock/app/\(path)") else {
                 throw StockTrendError.unavailable("行情地址无效")
@@ -150,14 +206,14 @@ actor StockTrendService {
             guard response.statusCode == 200 else {
                 throw StockTrendError.unavailable("接口 HTTP \(response.statusCode)")
             }
-            return try Self.parse(data, code: code, market: market, range: range)
+            return try Self.parse(data, code: code, market: market, range: requestRange)
         }
         inFlight[key] = task
         do {
             let trend = try await task.value
             inFlight[key] = nil
             cache[key] = (now, trend)
-            return trend
+            return trend.displaying(range)
         } catch {
             inFlight[key] = nil
             throw error
@@ -171,6 +227,7 @@ actor StockTrendService {
             throw StockTrendError.unavailable("接口返回格式错误或代码未匹配")
         }
         var entries: [StockTrendPoint] = []
+        var candles: [StockCandle] = []
         switch range {
         case .today:
             guard let snapshot = node["data"] as? [String: Any],
@@ -187,19 +244,37 @@ actor StockTrendService {
                 guard let date = day["date"] as? String, let rows = day["data"] as? [String] else { return [StockTrendPoint]() }
                 return parseMinutes(rows, day: date, market: market)
             }
-        case .month:
-            guard let rows = node["day"] as? [[Any]] else {
-                throw StockTrendError.unavailable("日线数据缺失")
+        case .month, .dailyCandles, .weeklyCandles, .monthlyCandles:
+            let field: String
+            switch range {
+            case .month, .dailyCandles: field = "day"
+            case .weeklyCandles: field = "week"
+            case .monthlyCandles: field = "month"
+            default: preconditionFailure("Not a candlestick or daily close range")
             }
-            entries = rows.compactMap { row in
-                guard row.count >= 6, let day = row[0] as? String,
-                      let price = Double(row[2] as? String ?? ""), price.isFinite, price > 0,
-                      day.count == 10 else { return nil }
+            guard let rows = node[field] as? [[Any]] else {
+                throw StockTrendError.unavailable("\(field) K 线数据缺失")
+            }
+            candles = rows.compactMap { row in
+                guard row.count >= 6, let day = row[0] as? String, day.count == 10,
+                      let open = Double(row[1] as? String ?? ""), open.isFinite, open > 0,
+                      let close = Double(row[2] as? String ?? ""), close.isFinite, close > 0,
+                      let high = Double(row[3] as? String ?? ""), high.isFinite,
+                      let low = Double(row[4] as? String ?? ""), low.isFinite, low > 0,
+                      high >= max(open, close), low <= min(open, close) else { return nil }
                 let compact = day.replacingOccurrences(of: "-", with: "")
                 let time = market == .mainland ? "150000" : "160000"
                 guard let date = market.quoteTime(from: compact + time) else { return nil }
-                return StockTrendPoint(date: date, price: price)
+                return StockCandle(date: date, open: open, high: high, low: low, close: close)
             }
+            candles.sort { $0.date < $1.date }
+            var uniqueCandles: [StockCandle] = []
+            for candle in candles {
+                if uniqueCandles.last?.date == candle.date { uniqueCandles[uniqueCandles.count - 1] = candle }
+                else { uniqueCandles.append(candle) }
+            }
+            candles = uniqueCandles
+            entries = candles.map { StockTrendPoint(date: $0.date, price: $0.close) }
         }
         guard !entries.isEmpty else { throw StockTrendError.unavailable("该区间没有有效价格点") }
         entries.sort { $0.date < $1.date }
@@ -208,7 +283,8 @@ actor StockTrendService {
             if unique.last?.date == point.date { unique[unique.count - 1] = point }
             else { unique.append(point) }
         }
-        return StockTrend(code: code, market: market, range: range, points: unique)
+        return StockTrend(code: code, market: market, range: range, points: unique,
+                          candles: candles)
     }
 
     private static func parseMinutes(_ rows: [String], day: String, market: StockMarket) -> [StockTrendPoint] {

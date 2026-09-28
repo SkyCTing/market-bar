@@ -571,6 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         await service.fetchPriceInfo(for: provider)
     }
     private var goldTrendController: GoldTrendWindowController?
+    private var stockKlineController: StockKlineWindowController?
     private let floatingCharacterController = FloatingCharacterController()
 
     private var selectedProvider: GoldProvider = .zheShang
@@ -729,6 +730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
     func applicationWillTerminate(_ notification: Notification) {
         goldTrendController?.close()
+        stockKlineController?.close()
         goldHistoryRecorder.stop()
         hotKeyCenter.stop()
         accessibilityRestartTimer?.invalidate()
@@ -792,6 +794,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         goldHistoryRecorder.sampleOther(than: provider, at: recordedAt)
         currentMarketData = market
         currentStockQuotes = stocks
+        if let code = stockKlineController?.code, let quote = stocks[code] {
+            stockKlineController?.updateQuote(quote)
+        }
         lastUpdateTime = Date()
         updateStatusTitle()
         refreshHolidaysIfNeeded()
@@ -891,6 +896,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             && watchlistSettings?.isVisible != true
             && reminderList?.isVisible != true
             && goldTrendController?.isVisible != true
+            && stockKlineController?.isVisible != true
         guard accessibilityRestartPolicy.shouldRestart(
             trusted: UnreadBadge.isAccessibilityAuthorized(), canRestart: canRestart
         ) else { return }
@@ -1946,8 +1952,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.loadStockTrend = { [stockTrendService] code, range in
             try await stockTrendService.fetch(code: code, range: range)
         }
+        panel.onOpenStockKline = { [weak self] quote in self?.showStockKline(quote) }
         panel.show(below: buttonRect, data: buildHoverPanelData())
         hoverPanel = panel
+    }
+
+    private func showStockKline(_ quote: StockQuote) {
+        let controller = stockKlineController ?? StockKlineWindowController { [stockTrendService] code, range, force in
+            try await stockTrendService.fetch(code: code, range: range, force: force)
+        }
+        stockKlineController = controller
+        isHoverPanelPinned = false
+        hoverPanel?.dismiss()
+        do {
+            try controller.show(quote: quote)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "无法打开 K 线图"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
     }
 
     private func updateHoverPanelContent() {
@@ -2033,6 +2057,7 @@ final class HoverPanel {
     var goldProvider: GoldProvider?
     var loadGoldTrend: ((GoldProvider, Date, Date) async throws -> GoldTrend)?
     var loadStockTrend: ((String, StockTrendRange) async throws -> StockTrend)?
+    var onOpenStockKline: ((StockQuote) -> Void)?
     private var window: NSPanel?
     private var buttonRect: NSRect = .zero
     private var displayedStocks: [String: StockRow] = [:]
@@ -2608,9 +2633,11 @@ final class HoverPanel {
         let popup = stockTrendPopover ?? StockTrendPopover()
         stockTrendPopover = popup
         popup.onRangeChange = { [weak self] in self?.requestStockTrend(after: .zero) }
+        popup.onOpenKline = { [weak self] quote in self?.onOpenStockKline?(quote) }
         let rowFrame = window.convertToScreen(content.convert(title.frame, to: nil))
         stockTrendAnchor = rowFrame
-        popup.show(code: code, name: row.quote.name, market: market, row: rowFrame, alongside: window.frame)
+        popup.show(code: code, name: row.quote.name, market: market, quote: row.quote,
+                   row: rowFrame, alongside: window.frame)
         requestStockTrend(after: .milliseconds(180))
     }
 
@@ -2748,6 +2775,10 @@ final class HoverPanel {
         }
         displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
         if let stockTrendCode, displayedStocks[stockTrendCode] == nil { dismissStockTrend() }
+        if let stockTrendCode, let quote = displayedStocks[stockTrendCode]?.quote,
+           let market = StockMarket.forCode(stockTrendCode) {
+            stockTrendPopover?.updateQuote(quote, market: market)
+        }
         displayedHolidays = data.holidays
         refreshGoldTrend()
         refreshHoveredQuote()
