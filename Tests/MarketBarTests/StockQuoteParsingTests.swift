@@ -22,7 +22,9 @@ final class StockQuoteParsingTests: XCTestCase {
         raiseValue: String,
         percent: String,
         volume: String = "0",
-        timestamp: String = "20260923161437"
+        timestamp: String = "20260923161437",
+        high: String = "0",
+        low: String = "0"
     ) -> String {
         var fields = [String](repeating: "0", count: 40)
         fields[1] = "某只标的"  // 名称字段含中文，用来验证 GBK 字节不会破坏后续解析
@@ -34,6 +36,8 @@ final class StockQuoteParsingTests: XCTestCase {
         fields[30] = timestamp
         fields[31] = raiseValue
         fields[32] = percent
+        fields[33] = high
+        fields[34] = low
         return "v_\(code)=\"" + fields.joined(separator: "~") + "\";\n"
     }
 
@@ -254,5 +258,76 @@ final class StockQuoteParsingTests: XCTestCase {
 
         // 内置默认值单独校验
         XCTAssertEqual(WatchlistConfig.default.watchlist.count, 16)
+    }
+}
+
+// MARK: - 当日最高/最低
+
+/// 实测：沪深、港股、美股三个市场的 [33]/[34] 都是最高/最低
+/// （sh600036 → 41.08/40.60，hk00700 → 447.0/439.6，usAAPL → 341.67/334.53）
+final class StockQuoteHighLowTests: XCTestCase {
+    private func quote(high: String, low: String) -> StockQuote {
+        var quote = StockQuote(
+            code: "sh600036", name: "招商银行", price: "40.72",
+            raise: 0.03, raisePercent: 0.0007, volume: 0, sessionDate: "2026-09-28"
+        )
+        quote.high = high
+        quote.low = low
+        return quote
+    }
+
+    func testBothPresent() {
+        XCTAssertEqual(quote(high: "41.08", low: "40.60").highLowText, "最高 41.08 · 最低 40.60")
+    }
+
+    /// 只有一边有数据时只说那一边
+    func testOnlyOneSide() {
+        XCTAssertEqual(quote(high: "41.08", low: "--").highLowText, "最高 41.08")
+        XCTAssertEqual(quote(high: "--", low: "40.60").highLowText, "最低 40.60")
+    }
+
+    /// 两个都没有时返回 nil —— 别显示一行「最高 --」
+    func testNeitherPresent() {
+        XCTAssertNil(quote(high: "--", low: "--").highLowText)
+    }
+
+    /// 占位行情（停牌/未开盘）默认就是 "--"
+    func testPlaceholderHasNoRange() {
+        let placeholder = StockQuote.placeholder(code: "sh600036", name: "招商银行", volume: 0, sessionDate: "")
+
+        XCTAssertEqual(placeholder.high, "--")
+        XCTAssertNil(placeholder.highLowText)
+    }
+}
+
+
+// MARK: 最高/最低走真实解析路径
+
+extension StockQuoteParsingTests {
+    /// 实测三个市场 [33]/[34] 都是最高/最低，这条盯住下标别写错
+    func testParsesHighAndLowFields() throws {
+        let data = payload(record(
+            code: "sh512170", bareCode: "512170", price: "0.349",
+            raiseValue: "0.001", percent: "0.29", high: "0.360", low: "0.341"
+        ))
+
+        let quote = try XCTUnwrap(GoldPriceService.parseStockQuotes(data, watchlist: [etf])["sh512170"])
+
+        XCTAssertEqual(quote.high, "0.360")
+        XCTAssertEqual(quote.low, "0.341")
+        XCTAssertEqual(quote.highLowText, "最高 0.360 · 最低 0.341")
+    }
+
+    /// 接口给 0（停牌/未开盘）时算「没有数据」，不能显示成「最高 0」
+    func testZeroHighLowBecomesPlaceholder() throws {
+        let data = payload(record(
+            code: "sh512170", bareCode: "512170", price: "0.349",
+            raiseValue: "0.001", percent: "0.29", high: "0", low: "0"
+        ))
+
+        let quote = try XCTUnwrap(GoldPriceService.parseStockQuotes(data, watchlist: [etf])["sh512170"])
+
+        XCTAssertEqual(quote.high, "--")
+        XCTAssertNil(quote.highLowText)
     }
 }

@@ -178,6 +178,12 @@ enum StockWatchlist {
 
 /// 单只标的的行情。价格/涨跌字段与 `MarketData.QuoteRow` 一一对应，
 /// 因此面板的 `formatValueWithPercent` 与 `raisedColor` 可以直接复用。
+/// 取字段并当价格格式化；越界或不是正数一律 "--"（沿用价格列的哨兵约定）
+private func stockPriceText(_ raw: String?) -> String {
+    guard let raw, let value = Double(raw), value.isFinite, value > 0 else { return "--" }
+    return raw
+}
+
 struct StockQuote: Sendable {
     let code: String
     let name: String
@@ -192,6 +198,22 @@ struct StockQuote: Sendable {
     let sessionDate: String
     /// 腾讯原始时间戳按标的所属市场的当地时间解析；缺失时不冒充实时行情
     var quotedAt: Date? = nil
+    /// 当日最高价（已格式化，`"--"` 表示无数据）
+    var high: String = "\u{002D}\u{002D}"
+    /// 当日最低价
+    var low: String = "\u{002D}\u{002D}"
+
+    /// 「最高 41.08 · 最低 40.60」；两个都没有时返回 nil（别显示一行「最高 --」）
+    var highLowText: String? {
+        let hasHigh = high != "--"
+        let hasLow = low != "--"
+        guard hasHigh || hasLow else { return nil }
+
+        var parts: [String] = []
+        if hasHigh { parts.append("最高 \(high)") }
+        if hasLow { parts.append("最低 \(low)") }
+        return parts.joined(separator: " · ")
+    }
 
     /// 数值价格。`price` 是已格式化的字符串，`"--"` 表示无数据 ——
     /// 阈值比较要用数值，别在每个判定点各写一遍 `Double(...)` 加哨兵判断
@@ -377,6 +399,7 @@ final class GoldPriceService: Sendable {
                 continue
             }
 
+            // [33] 最高 / [34] 最低 —— 沪深、港股、美股三个市场都是这两个位置（实测过）
             quotes[entry.code] = StockQuote(
                 code: entry.code,
                 name: entry.name,
@@ -385,7 +408,11 @@ final class GoldPriceService: Sendable {
                 raisePercent: (Double(fields[32]) ?? 0) / 100,  // 接口给的是百分数，面板要小数
                 volume: volume,
                 sessionDate: sessionDate,
-                quotedAt: quotedAt
+                quotedAt: quotedAt,
+                // [33] 最高 / [34] 最低 —— 沪深、港股、美股三个市场都是这两个位置
+                //（实测：sh600036 → 41.08/40.60，hk00700 → 447.0/439.6，usAAPL → 341.67/334.53）
+                high: stockPriceText(fields.indices.contains(33) ? fields[33] : nil),
+                low: stockPriceText(fields.indices.contains(34) ? fields[34] : nil)
             )
         }
         return quotes
