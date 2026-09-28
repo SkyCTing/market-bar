@@ -1,9 +1,9 @@
 import AppKit
 import Foundation
 
-enum GoldProvider: CaseIterable {
-    case zheShang
-    case minSheng
+enum GoldProvider: Int, CaseIterable {
+    case zheShang = 1
+    case minSheng = 2
 
     var displayName: String {
         switch self {
@@ -566,6 +566,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let service = GoldPriceService()
+    private lazy var goldHistoryRecorder = GoldHistoryRecorder { [service] provider in
+        await service.fetchPriceInfo(for: provider)
+    }
     private let floatingCharacterController = FloatingCharacterController()
 
     private var selectedProvider: GoldProvider = .zheShang
@@ -644,6 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        _ = goldHistoryRecorder
         loadSettings()
         aiSignController.onChange = { [weak self] in
             self?.updateFloatingCharacter()
@@ -722,6 +726,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 退出前必须取消在途请求：否则 claude 子进程被 launchd 收养，会继续烧钱
     func applicationWillTerminate(_ notification: Notification) {
+        goldHistoryRecorder.stop()
         hotKeyCenter.stop()
         accessibilityRestartTimer?.invalidate()
         chatController?.shutdown()
@@ -779,6 +784,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard quoteRefreshGate.accepts(generation) else { return }
         currentPriceInfo = info
         currentPrice = info.price
+        let recordedAt = Date()
+        goldHistoryRecorder.recordCurrent(provider, price: info.price, at: recordedAt)
+        goldHistoryRecorder.sampleOther(than: provider, at: recordedAt)
         currentMarketData = market
         currentStockQuotes = stocks
         lastUpdateTime = Date()
@@ -947,6 +955,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.setSubmenu(refreshSubmenu, for: refreshMenuItem)
         menu.addItem(refreshMenuItem)
 
+        let historyItem = NSMenuItem(title: "金价历史记录…", action: #selector(showGoldHistoryStatus), keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
 
         menu.addItem(.separator())
 
@@ -1059,6 +1070,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveSettings()
         Task {
             await self.refreshPrice()
+        }
+    }
+
+    @objc private func showGoldHistoryStatus() {
+        Task { [weak self] in
+            guard let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "金价历史记录"
+            do {
+                let summaries = try await goldHistoryRecorder.summaries()
+                let formatter = DateFormatter()
+                formatter.dateStyle = .short
+                formatter.timeStyle = .short
+                let lines = summaries.map { item in
+                    let span = item.first.flatMap { first in
+                        item.last.map { "（\(formatter.string(from: first)) 至 \(formatter.string(from: $0))）" }
+                    } ?? "（等待首次有效报价）"
+                    return "\(item.provider.displayName)：\(item.count) 条 \(span)"
+                }
+                alert.informativeText = (
+                    ["每家银行每分钟最多保存一条，仅记录程序运行时取到的有效价格。"]
+                    + lines
+                    + ["保存于：\(GoldHistoryStore.defaultURL.path)"]
+                ).joined(separator: "\n")
+            } catch {
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+            }
+            alert.addButton(withTitle: "好")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
 
