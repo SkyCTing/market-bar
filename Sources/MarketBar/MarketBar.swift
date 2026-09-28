@@ -566,6 +566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let service = GoldPriceService()
+    private let stockTrendService = StockTrendService()
     private lazy var goldHistoryRecorder = GoldHistoryRecorder { [service] provider in
         await service.fetchPriceInfo(for: provider)
     }
@@ -1753,9 +1754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let isOverButton = buttonRect.contains(mouseLocation)
 
         let isOverPanel = hoverPanel.map {
-            $0.isVisible && HoverPanelInteraction.contains(
-                mouseLocation, button: buttonRect, panel: $0.frame
-            )
+            $0.isVisible && $0.containsInteraction(mouseLocation, button: buttonRect)
         } ?? false
 
         if isOverButton && (hoverPanel == nil || !hoverPanel!.isVisible) {
@@ -1944,6 +1943,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { throw GoldHistoryError.database("应用已关闭") }
             return try await self.goldHistoryRecorder.trend(provider: provider, from: start, to: end)
         }
+        panel.loadStockTrend = { [stockTrendService] code, range in
+            try await stockTrendService.fetch(code: code, range: range)
+        }
         panel.show(below: buttonRect, data: buildHoverPanelData())
         hoverPanel = panel
     }
@@ -1968,6 +1970,33 @@ enum HoverPanelInteraction {
             x: left, y: panel.maxY,
             width: right - left, height: button.minY - panel.maxY
         ).contains(point)
+    }
+
+    static func containsPopover(_ point: NSPoint, panel: NSRect, popup: NSRect) -> Bool {
+        if popup.contains(point) { return true }
+        let lower = max(panel.minY, popup.minY)
+        let upper = min(panel.maxY, popup.maxY)
+        guard upper > lower else { return false }
+        if popup.minX >= panel.maxX {
+            return NSRect(x: panel.maxX, y: lower, width: popup.minX - panel.maxX, height: upper - lower).contains(point)
+        }
+        if panel.minX >= popup.maxX {
+            return NSRect(x: popup.maxX, y: lower, width: panel.minX - popup.maxX, height: upper - lower).contains(point)
+        }
+        return false
+    }
+
+    static func crossesToPopover(_ point: NSPoint, from row: NSRect, to popup: NSRect) -> Bool {
+        if popup.contains(point) { return true }
+        let startX = popup.midX < row.midX ? row.minX : row.maxX
+        let endX = popup.midX < row.midX ? popup.maxX : popup.minX
+        let distance = endX - startX
+        guard distance != 0 else { return false }
+        let fraction = (point.x - startX) / distance
+        guard (0...1).contains(fraction) else { return false }
+        let centerY = row.midY + (popup.midY - row.midY) * fraction
+        let halfHeight = row.height / 2 + (popup.height - row.height) / 2 * fraction
+        return abs(point.y - centerY) <= halfHeight
     }
 
     static func quoteCode(
@@ -2003,11 +2032,17 @@ struct HoverPanelData {
 final class HoverPanel {
     var goldProvider: GoldProvider?
     var loadGoldTrend: ((GoldProvider, Date, Date) async throws -> GoldTrend)?
+    var loadStockTrend: ((String, StockTrendRange) async throws -> StockTrend)?
     private var window: NSPanel?
     private var buttonRect: NSRect = .zero
     private var displayedStocks: [String: StockRow] = [:]
     private var displayedHolidays: [String: String] = [:]
     private var hoveredQuoteCode: String?
+    private var stockTrendCode: String?
+    private var stockTrendPopover: StockTrendPopover?
+    private var stockTrendTask: Task<Void, Never>?
+    private var stockTrendToken = UUID()
+    private var stockTrendAnchor: NSRect?
     private let goldSparkline = GoldHoverSparkline()
     private let goldTrendRange = NSSegmentedControl()
     private let goldTrendSummary = NSTextField(labelWithString: "正在读取金价记录…")
@@ -2062,6 +2097,12 @@ final class HoverPanel {
 
     var frame: NSRect {
         window?.frame ?? .zero
+    }
+
+    func containsInteraction(_ point: NSPoint, button: NSRect) -> Bool {
+        if HoverPanelInteraction.contains(point, button: button, panel: frame) { return true }
+        guard let popup = stockTrendPopover, popup.isVisible else { return false }
+        return HoverPanelInteraction.containsPopover(point, panel: frame, popup: popup.frame)
     }
 
     func show(below buttonRect: NSRect, data: HoverPanelData) {
@@ -2531,6 +2572,11 @@ final class HoverPanel {
 
     func updateHoveredQuote(at screenPoint: NSPoint) {
         guard let window, let content = window.contentView else { return }
+        if let popup = stockTrendPopover, popup.isVisible,
+           HoverPanelInteraction.containsPopover(screenPoint, panel: window.frame, popup: popup.frame) {
+            popup.updateHover(at: screenPoint)
+            return
+        }
         let inWindow = window.convertFromScreen(NSRect(origin: screenPoint, size: .zero)).origin
         let point = content.convert(inWindow, from: nil)
         goldSparkline.updateHover(at: goldSparkline.convert(point, from: content))
@@ -2539,7 +2585,69 @@ final class HoverPanel {
             titles: stockTitleLabels.mapValues(\.frame),
             prices: stockValueLabels.mapValues(\.frame)
         )
+        if hoveredQuoteCode == nil, let popup = stockTrendPopover, popup.isVisible,
+           let anchor = stockTrendAnchor,
+           HoverPanelInteraction.crossesToPopover(screenPoint, from: anchor, to: popup.frame) {
+            popup.updateHover(at: screenPoint)
+            return
+        }
         refreshHoveredQuote()
+        updateStockTrend(for: hoveredQuoteCode)
+    }
+
+    private func updateStockTrend(for code: String?) {
+        guard let code, let row = displayedStocks[code],
+              let market = StockMarket.forCode(code), market != .unitedStates,
+              let window, let content = window.contentView,
+              let title = stockTitleLabels[code] else {
+            dismissStockTrend()
+            return
+        }
+        guard stockTrendCode != code || stockTrendPopover?.isVisible != true else { return }
+        stockTrendCode = code
+        let popup = stockTrendPopover ?? StockTrendPopover()
+        stockTrendPopover = popup
+        popup.onRangeChange = { [weak self] in self?.requestStockTrend(after: .zero) }
+        let rowFrame = window.convertToScreen(content.convert(title.frame, to: nil))
+        stockTrendAnchor = rowFrame
+        popup.show(code: code, name: row.quote.name, market: market, row: rowFrame, alongside: window.frame)
+        requestStockTrend(after: .milliseconds(180))
+    }
+
+    private func requestStockTrend(after delay: Duration) {
+        stockTrendToken = UUID()
+        let token = stockTrendToken
+        stockTrendTask?.cancel()
+        guard let code = stockTrendCode, let popup = stockTrendPopover,
+              let loadStockTrend else { return }
+        let range = popup.range
+        popup.showLoading()
+        stockTrendTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: delay)
+                let trend = try await loadStockTrend(code, range)
+                guard !Task.isCancelled, self.stockTrendToken == token, self.stockTrendCode == code else { return }
+                popup.show(trend)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self.stockTrendToken == token, self.stockTrendCode == code else { return }
+                popup.showError(error)
+                NSLog("MarketBar: stock trend %@ failed: %@", code, error.localizedDescription)
+            }
+            self.stockTrendTask = nil
+        }
+    }
+
+    private func dismissStockTrend() {
+        guard stockTrendCode != nil else { return }
+        stockTrendCode = nil
+        stockTrendAnchor = nil
+        stockTrendToken = UUID()
+        stockTrendTask?.cancel()
+        stockTrendTask = nil
+        stockTrendPopover?.dismiss()
     }
 
     @objc private func goldTrendRangeChanged() {
@@ -2639,6 +2747,7 @@ final class HoverPanel {
             }
         }
         displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
+        if let stockTrendCode, displayedStocks[stockTrendCode] == nil { dismissStockTrend() }
         displayedHolidays = data.holidays
         refreshGoldTrend()
         refreshHoveredQuote()
@@ -2705,6 +2814,7 @@ final class HoverPanel {
     }
 
     func dismiss() {
+        dismissStockTrend()
         goldTrendToken = UUID()
         goldTrendTask?.cancel()
         goldTrendTask = nil
