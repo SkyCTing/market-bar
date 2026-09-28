@@ -95,6 +95,30 @@ enum StockMarket: Sendable {
         }
     }
 
+    var regularSessionMinuteCount: Int {
+        switch self {
+        case .mainland: 240
+        case .hongKong: 330
+        case .unitedStates: 390
+        }
+    }
+
+    /// Zero-based minute within regular trading hours; lunch does not consume chart width.
+    func regularSessionMinuteIndex(at date: Date) -> Int? {
+        guard isRegularSession(at: date) else { return nil }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { return nil }
+        let time = hour * 60 + minute
+        switch self {
+        case .mainland:
+            return time < 11 * 60 + 30 ? time - (9 * 60 + 30) : 120 + time - 13 * 60
+        case .hongKong:
+            return time < 12 * 60 ? time - (9 * 60 + 30) : 150 + time - 13 * 60
+        case .unitedStates:
+            return time - (9 * 60 + 30)
+        }
+    }
+
     /// 正常交易时段的进度；盘前或周末返回 nil，收盘后返回 1。
     /// 美股使用纽约时区，夏令时由系统日历处理，不用固定北京时间偏移。
     func progress(at date: Date) -> Double? {

@@ -8,15 +8,18 @@ final class StockTrendTests: XCTestCase {
 
     func testIntradayUsesMarketLocalTimestampAndOnlyRegularSession() throws {
         for (code, market, rows) in [
-            ("sh600036", StockMarket.mainland, ["0929 10.0 1", "0930 40.67 5", "1130 41.5 6", "1300 40.85 8", "1500 41.0 9"]),
-            ("hk00700", StockMarket.hongKong, ["0930 441.4 8", "1200 446 4", "1300 444.6 7", "1608 439.8 2"]),
+            ("sh600036", StockMarket.mainland, ["0929 10.0 1", "1129 40.67 5", "1130 41.5 6", "1300 40.85 8", "1500 41.0 9"]),
+            ("hk00700", StockMarket.hongKong, ["1159 441.4 8", "1200 446 4", "1300 444.6 7", "1608 439.8 2"]),
         ] {
             let data = try payload(code: code, node: ["data": ["date": "20260928", "data": rows]])
             let trend = try StockTrendService.parse(data, code: code, market: market, range: .today)
             XCTAssertEqual(trend.points.count, 2)
             XCTAssertEqual(market.dateString(for: trend.points[0].date), "2026-09-28")
             XCTAssertEqual(trend.high?.price, code == "sh600036" ? 40.85 : 444.6)
-            XCTAssertEqual(trend.segments.count, 2, "Do not draw a continuous line across the lunch break")
+            XCTAssertEqual(trend.segments.count, 1, "Adjacent trading minutes should connect over lunch")
+            let minutes = market.regularSessionMinuteCount
+            XCTAssertEqual(trend.plotFractions[1] - trend.plotFractions[0],
+                           1 / Double(minutes - 1), accuracy: 1e-9)
         }
     }
 
@@ -29,7 +32,10 @@ final class StockTrendTests: XCTestCase {
         ])
         let trend = try StockTrendService.parse(data, code: "hk00700", market: .hongKong, range: .fiveDays)
         XCTAssertEqual(trend.points.map(\.price), [437, 438, 443, 444])
-        XCTAssertEqual(trend.segments.map(\.count), [2, 2])
+        XCTAssertEqual(trend.segments.map(\.count), [4])
+        XCTAssertEqual(trend.plotFractions[2] - trend.plotFractions[1],
+                       1 / Double(2 * StockMarket.hongKong.regularSessionMinuteCount - 1), accuracy: 1e-9,
+                       "Weekends and overnight should be compressed, not drawn as long holes")
         XCTAssertEqual(trend.low?.price, 437)
         XCTAssertEqual(trend.high?.price, 444)
     }
@@ -47,14 +53,27 @@ final class StockTrendTests: XCTestCase {
         XCTAssertEqual(trend.segments.count, 1, "Adjacent trading-day closes may be joined over a weekend")
     }
 
-    func testLongHolidayAndFiveDayOvernightBothBreakLines() throws {
+    func testMonthClosesConnectAcrossNonTradingDays() throws {
         let month = try payload(code: "hk00700", node: ["day": [
             ["2026-09-25", "440", "441", "445", "439", "10"],
             ["2026-10-06", "445", "448", "450", "440", "20"],
         ]])
         let trend = try StockTrendService.parse(month, code: "hk00700", market: .hongKong, range: .month)
-        XCTAssertEqual(trend.segments.map(\.count), [1, 1])
+        XCTAssertEqual(trend.segments.map(\.count), [2])
+        XCTAssertEqual(trend.plotFractions, [0, 1])
         XCTAssertEqual(trend.latest?.price, 448)
+    }
+
+    func testMissingTradingMinuteStillMakesAnHonestGap() throws {
+        let data = try payload(code: "sh600036", node: [
+            "data": ["date": "20260928", "data": [
+                "0930 40.1 5", "0931 40.2 7", "0934 40.4 8", "0935 40.5 9",
+            ]],
+        ])
+        let trend = try StockTrendService.parse(data, code: "sh600036", market: .mainland, range: .today)
+        XCTAssertEqual(trend.segments.map(\.count), [2, 2])
+        XCTAssertEqual(trend.plotFractions[2] - trend.plotFractions[1],
+                       3 / 239.0, accuracy: 1e-9)
     }
 
     func testMalformedDatesPricesAndMissingSeriesAreNotDrawn() throws {
@@ -151,6 +170,9 @@ final class StockTrendTests: XCTestCase {
                 XCTAssertEqual(trend.market, market)
                 XCTAssertGreaterThan(trend.points.count, 1, "\(code) \(range.title) returned too few valid points")
                 XCTAssertTrue(trend.points.allSatisfy { $0.price > 0 && $0.price.isFinite })
+                XCTAssertEqual(trend.segments.count, 1,
+                               "\(code) \(range.title) should connect adjacent trading observations")
+                XCTAssertEqual(trend.plotFractions.count, trend.points.count)
             }
         }
     }

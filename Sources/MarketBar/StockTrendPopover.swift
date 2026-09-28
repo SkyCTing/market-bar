@@ -5,6 +5,13 @@ final class StockTrendPlot: NSView {
     var trend: StockTrend? {
         didSet {
             segments = trend?.segments ?? []
+            positions = trend?.plotFractions ?? []
+            positionsByDate = [:]
+            if let trend, positions.count == trend.points.count {
+                for (point, position) in zip(trend.points, positions) {
+                    positionsByDate[point.date] = position
+                }
+            }
             hovered = nil
             needsDisplay = true
         }
@@ -12,6 +19,8 @@ final class StockTrendPlot: NSView {
     var onHover: ((StockTrendPoint?) -> Void)?
     private var hovered: StockTrendPoint?
     private var segments: [[StockTrendPoint]] = []
+    private var positions: [Double] = []
+    private var positionsByDate: [Date: Double] = [:]
     private let left: CGFloat = 52
     private let right: CGFloat = 10
     private let bottom: CGFloat = 21
@@ -23,19 +32,25 @@ final class StockTrendPlot: NSView {
     }
 
     func updateHover(at point: NSPoint) {
-        guard let trend, plot.contains(point), let first = trend.points.first,
-              let last = trend.points.last else {
+        guard let trend, plot.contains(point), positions.count == trend.points.count,
+              !positions.isEmpty else {
             setHovered(nil)
             return
         }
-        let duration = max(1, last.date.timeIntervalSince(first.date))
-        let time = first.date.addingTimeInterval(
-            duration * Double((point.x - plot.minX) / plot.width)
-        )
-        let tolerance = trend.range.isDailyClose
-            ? 14 * 3_600 : min(15 * 60, max(90, duration / plot.width * 7))
-        let nearest = trend.nearest(at: time)
-        setHovered(nearest.flatMap { abs($0.date.timeIntervalSince(time)) <= tolerance ? $0 : nil })
+        let fraction = Double((point.x - plot.minX) / plot.width)
+        var low = 0
+        var high = positions.count
+        while low < high {
+            let middle = (low + high) / 2
+            if positions[middle] < fraction { low = middle + 1 }
+            else { high = middle }
+        }
+        let index: Int
+        if low == 0 { index = 0 }
+        else if low == positions.count { index = low - 1 }
+        else { index = fraction - positions[low - 1] <= positions[low] - fraction ? low - 1 : low }
+        let distance = abs(positions[index] - fraction) * Double(plot.width)
+        setHovered(distance <= 8 ? trend.points[index] : nil)
     }
 
     private func setHovered(_ point: StockTrendPoint?) {
@@ -48,14 +63,18 @@ final class StockTrendPlot: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard let trend, let high = trend.high, let low = trend.low,
-              let first = trend.points.first, let last = trend.points.last else { return }
+              let first = trend.points.first, let last = trend.points.last,
+              positions.count == trend.points.count else { return }
         let span = max(high.price - low.price, high.price * 0.002, 0.01)
         let minPrice = low.price - span * 0.1
         let priceRange = span * 1.2
-        let duration = max(1, last.date.timeIntervalSince(first.date))
-        func location(_ item: StockTrendPoint) -> NSPoint {
-            NSPoint(
-                x: plot.minX + plot.width * CGFloat(item.date.timeIntervalSince(first.date) / duration),
+        func location(_ item: StockTrendPoint) -> NSPoint? {
+            guard let fraction = positionsByDate[item.date] else {
+                NSLog("MarketBar: stock chart point missing from trading-time axis")
+                return nil
+            }
+            return NSPoint(
+                x: plot.minX + plot.width * CGFloat(fraction),
                 y: plot.minY + plot.height * CGFloat((item.price - minPrice) / priceRange)
             )
         }
@@ -77,14 +96,15 @@ final class StockTrendPlot: NSView {
         for segment in segments {
             let path = NSBezierPath()
             for (index, item) in segment.enumerated() {
-                if index == 0 { path.move(to: location(item)) }
-                else { path.line(to: location(item)) }
+                guard let position = location(item) else { return }
+                if index == 0 { path.move(to: position) }
+                else { path.line(to: position) }
             }
             path.lineWidth = 1.5
             pathColor.setStroke()
             path.stroke()
             if segment.count == 1 {
-                let p = location(segment[0])
+                guard let p = location(segment[0]) else { return }
                 pathColor.setFill()
                 NSBezierPath(ovalIn: NSRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)).fill()
             }
@@ -100,7 +120,7 @@ final class StockTrendPlot: NSView {
                        withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
         }
         if let hovered {
-            let p = location(hovered)
+            guard let p = location(hovered) else { return }
             NSColor.white.setFill()
             NSBezierPath(ovalIn: NSRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)).fill()
         }
@@ -217,7 +237,7 @@ final class StockTrendPopover {
     func showLoading() {
         plot.trend = nil
         summaryLabel.stringValue = "正在读取\(range.title)走势…"
-        detailLabel.stringValue = "分时只画交易时段；日线未复权，今日可能尚未收盘"
+        detailLabel.stringValue = "价格折线 · 压缩午休/隔夜；日线未复权、今日可能未收盘"
     }
 
     func show(_ trend: StockTrend) {
@@ -229,8 +249,9 @@ final class StockTrendPopover {
         let type = trend.range.isDailyClose ? "日线" : "价格"
         summaryLabel.stringValue = String(format: "最高%@ %.2f · 最低%@ %.2f %@", type, high.price, type, low.price, trend.market.currency)
         let timestamp = trend.market.formattedQuoteTime(latest.date)
-        detailLabel.stringValue = "\(trend.market.timeZoneName) · 截至 \(timestamp) · \(trend.points.count) 点"
+        detailLabel.stringValue = "\(trend.market.timeZoneName) · 截至 \(timestamp) · \(trend.points.count) 点 · 交易时间折线"
         detailLabel.toolTip = detailLabel.stringValue
+            + "；休市时段已压缩，不是蜡烛 K 线"
             + (trend.range.isDailyClose ? "；当日日线尚未收盘时是盘中暂值" : "")
     }
 

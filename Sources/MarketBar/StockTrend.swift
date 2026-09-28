@@ -30,16 +30,39 @@ struct StockTrend: Sendable {
     var low: StockTrendPoint? { points.min { $0.price < $1.price } }
     var latest: StockTrendPoint? { points.last }
 
+    private var tradingAxis: (slots: [Int], total: Int)? {
+        var rankByDate: [String: Int] = [:]
+        var slots: [Int] = []
+        for point in points {
+            let day = market.dateString(for: point.date)
+            if rankByDate[day] == nil { rankByDate[day] = rankByDate.count }
+            guard let minute = market.regularSessionMinuteIndex(at: point.date),
+                  let rank = rankByDate[day] else { return nil }
+            slots.append(rank * market.regularSessionMinuteCount + minute)
+        }
+        return (slots, max(1, rankByDate.count * market.regularSessionMinuteCount - 1))
+    }
+
+    /// Position on the *trading* timeline: skip lunch, nights and non-trading days.
+    /// A gap during an open session still occupies its missing minute slots.
+    var plotFractions: [Double] {
+        guard !points.isEmpty else { return [] }
+        if range.isDailyClose {
+            return points.indices.map { Double($0) / Double(max(1, points.count - 1)) }
+        }
+        guard let tradingAxis else { return [] }
+        return tradingAxis.slots.map { Double($0) / Double(tradingAxis.total) }
+    }
+
     var segments: [[StockTrendPoint]] {
         guard !points.isEmpty else { return [] }
+        if range.isDailyClose { return [points] }
+        guard let tradingAxis else { return points.map { [$0] } }
         var result: [[StockTrendPoint]] = []
         var segment: [StockTrendPoint] = [points[0]]
-        for (previous, current) in zip(points, points.dropFirst()) {
-            let age = current.date.timeIntervalSince(previous.date)
-            let connected = range.isDailyClose
-                ? age > 0 && age <= 4 * 86_400
-                : age > 0 && age <= 90
-            if !connected {
+        for index in points.indices.dropFirst() {
+            let current = points[index]
+            if tradingAxis.slots[index] - tradingAxis.slots[index - 1] != 1 {
                 result.append(segment)
                 segment = []
             }
