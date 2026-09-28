@@ -7,20 +7,22 @@ import XCTest
 final class HoverPanelQuoteTimeTests: XCTestCase {
     func testHoveringStockNameUpdatesVisibleQuoteTimeRow() throws {
         let quotedAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-25T08:08:20Z"))
-        let quote = StockQuote(
+        var quote = StockQuote(
             code: "hk00700", name: "腾讯控股", price: "436.600",
             raise: -1.8, raisePercent: -0.0041, volume: 0,
-            sessionDate: "2026-09-25", quotedAt: quotedAt
+            sessionDate: "2026-09-25", quotedAt: quotedAt, high: "447.000", low: "439.600"
         )
         let panel = HoverPanel()
-        let data = HoverPanelData(
-            provider: "测试", price: "0", changeAmount: "0", changePercent: "0",
-            isNegative: nil, updateTime: "08:00:00", refreshInterval: "1 秒",
-            alertInfo: "未设置", market: .empty,
-            stocks: [StockRow(quote: quote, volumeRatio: nil)],
-            summaries: [],
-            holidays: [:]
-        )
+        func makeData(_ quote: StockQuote) -> HoverPanelData {
+            HoverPanelData(
+                provider: "测试", price: "0", changeAmount: "0", changePercent: "0",
+                isNegative: nil, updateTime: "08:00:00", refreshInterval: "1 秒",
+                alertInfo: "未设置", market: .empty,
+                stocks: [StockRow(quote: quote, volumeRatio: nil)],
+                summaries: [], holidays: [:]
+            )
+        }
+        let data = makeData(quote)
         let screen = try XCTUnwrap(NSScreen.main)
         panel.show(below: NSRect(x: screen.frame.midX, y: screen.frame.maxY - 30, width: 60, height: 24), data: data)
         defer { panel.dismiss() }
@@ -42,13 +44,36 @@ final class HoverPanelQuoteTimeTests: XCTestCase {
         panel.updateHoveredQuote(at: point)
         XCTAssertTrue(result.stringValue.contains("2026-09-25 16:08:20 香港时间"))
         XCTAssertTrue(result.stringValue.contains(" · 旧"))
+        XCTAssertTrue(result.stringValue.contains("最高 447.000 · 最低 439.600 HKD"))
+        XCTAssertTrue(result.toolTip?.contains("报价日高低（2026-09-25，HKD）") == true)
+        content.layoutSubtreeIfNeeded()
+        let renderedWidth = (result.stringValue as NSString).size(withAttributes: [.font: result.font!]).width
+        XCTAssertLessThanOrEqual(renderedWidth, result.bounds.width, "报价时间与高低价应能同时完整显示")
 
-        panel.updateContent(data: data)
+        quote.high = "449.000"
+        quote.low = "438.200"
+        panel.updateContent(data: makeData(quote))
         XCTAssertTrue(result.stringValue.contains("2026-09-25 16:08:20 香港时间"))
+        XCTAssertTrue(result.stringValue.contains("最高 449.000 · 最低 438.200 HKD"))
+        XCTAssertTrue(name.toolTip?.contains("最高 449.000 · 最低 438.200") == true)
+        let price = try XCTUnwrap(labels.first { $0.stringValue.hasPrefix("436.600") })
+        XCTAssertTrue(price.toolTip?.contains("最高 449.000 · 最低 438.200") == true)
+        let pricePoint = window.convertToScreen(NSRect(
+            origin: content.convert(NSPoint(x: price.frame.midX, y: price.frame.midY), to: nil),
+            size: .zero
+        )).origin
+        panel.updateHoveredQuote(at: pricePoint)
+        XCTAssertTrue(result.stringValue.contains("最高 449.000 · 最低 438.200 HKD"))
+        quote.high = "--"
+        quote.low = "--"
+        panel.updateContent(data: makeData(quote))
+        XCTAssertFalse(result.stringValue.contains("最高"))
+        XCTAssertFalse(price.toolTip?.contains("报价日高低") == true)
         panel.updateHoveredQuote(at: window.convertToScreen(NSRect(
             origin: content.convert(NSPoint(x: 2, y: 2), to: nil), size: .zero
         )).origin)
         XCTAssertEqual(result.stringValue, "悬停股票名称或现价查看")
+        XCTAssertNil(result.toolTip)
     }
 
     func testInterleavedWatchlistIsActuallyGroupedInPanel() throws {

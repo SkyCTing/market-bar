@@ -178,6 +178,10 @@ final class StockQuoteParsingTests: XCTestCase {
             XCTAssertFalse(quote.sessionDate.isEmpty, "\(entry.code) 无有效交易日期")
             let time = try XCTUnwrap(quote.quotedAt, "\(entry.code) 无法解析报价时间")
             XCTAssertEqual(StockMarket.forCode(entry.code)?.dateString(for: time), quote.sessionDate)
+            let high = try XCTUnwrap(Double(quote.high), "\(entry.code) 无有效最高价")
+            let low = try XCTUnwrap(Double(quote.low), "\(entry.code) 无有效最低价")
+            XCTAssertGreaterThan(low, 0)
+            XCTAssertGreaterThanOrEqual(high, low)
         }
     }
 
@@ -297,6 +301,30 @@ final class StockQuoteHighLowTests: XCTestCase {
 
         XCTAssertEqual(placeholder.high, "--")
         XCTAssertNil(placeholder.highLowText)
+    }
+
+    func testHoverDetailsIncludeRangeCurrencyAndQuoteDayAcrossMarkets() throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-28T05:30:00Z"))
+        for (code, currency) in [("sh600036", "CNY"), ("hk00700", "HKD"), ("usAAPL", "USD")] {
+            let quote = StockQuote(
+                code: code, name: "Test", price: "100.12", raise: 0, raisePercent: 0,
+                volume: 0, sessionDate: "2026-09-25",
+                quotedAt: now.addingTimeInterval(-3 * 24 * 60 * 60),
+                high: "103.45", low: "98.76"
+            )
+            let row = StockRow(quote: quote, volumeRatio: nil)
+            let summary = row.quoteTimeSummary(at: now)
+            XCTAssertTrue(summary.contains("最高 103.45 · 最低 98.76 \(currency)"))
+            XCTAssertTrue(summary.contains("2026-09-25"))
+            XCTAssertTrue(summary.contains(" · 旧"))
+            XCTAssertTrue(row.quoteTooltip(at: now).contains("报价日高低（2026-09-25，\(currency)）"))
+        }
+    }
+
+    func testMissingRangeDoesNotInventZeroValuesInHoverDetails() {
+        let row = StockRow(quote: .placeholder(code: "hk00700", name: "Test"), volumeRatio: nil)
+        XCTAssertFalse(row.quoteTimeSummary(at: Date()).contains("最高"))
+        XCTAssertFalse(row.quoteTooltip(at: Date()).contains("最低"))
     }
 }
 

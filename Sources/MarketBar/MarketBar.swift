@@ -2438,10 +2438,12 @@ final class HoverPanel {
 
     private func refreshHoveredQuote() {
         guard let label = infoValueLabels["quoteTime"] else { return }
-        let text = hoveredQuoteCode.flatMap { displayedStocks[$0] }
-            .map { $0.quoteTimeSummary(at: Date(), holidays: displayedHolidays) }
-            ?? "悬停股票名称或现价查看"
+        let row = hoveredQuoteCode.flatMap { displayedStocks[$0] }
+        let now = Date()
+        let text = row?.quoteTimeSummary(at: now, holidays: displayedHolidays) ?? "悬停股票名称或现价查看"
         if label.stringValue != text { label.stringValue = text }
+        let tooltip = row?.quoteTooltip(at: now, holidays: displayedHolidays)
+        if label.toolTip != tooltip { label.toolTip = tooltip }
     }
 
     func updateContent(data: HoverPanelData) {

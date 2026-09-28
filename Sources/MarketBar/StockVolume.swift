@@ -213,7 +213,10 @@ struct StockRow: Sendable {
             return "\(quote.name) (\(quote.code))\n未知市场：无法核对报价时间"
         }
         let time = quote.quotedAt.map(market.formattedQuoteTime) ?? "未知"
-        return "\(quote.name) (\(quote.code))\n报价时间：\(time)（\(market.timeZoneName)）\n\(freshness.explanation)"
+        let range = quote.highLowText.map {
+            "\n报价日高低（\(quote.sessionDate.isEmpty ? "日期未知" : quote.sessionDate)，\(market.currency)）：\($0)"
+        } ?? ""
+        return "\(quote.name) (\(quote.code))\n报价时间：\(time)（\(market.timeZoneName)）\(range)\n\(freshness.explanation)"
     }
 
     func quoteTimeSummary(at date: Date, holidays: [String: String] = [:]) -> String {
@@ -221,7 +224,8 @@ struct StockRow: Sendable {
         let time = quote.quotedAt.map(market.formattedQuoteTime) ?? "时间未知"
         let status = QuoteFreshness.evaluate(quote, at: date, holidays: holidays)
         let suffix = status == .current ? "" : " · \(status.badge)"
-        return "\(quote.code) · \(time) \(market.timeZoneName)\(suffix)"
+        let range = quote.highLowText.map { " · \($0) \(market.currency)" } ?? ""
+        return "\(quote.code) · \(time) \(market.timeZoneName)\(suffix)\(range)"
     }
 
     /// 当日盈亏（标的当地币种）；无持仓 / 无行情 / 涨跌额异常时为 nil
