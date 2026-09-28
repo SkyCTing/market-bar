@@ -1939,6 +1939,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hoverPanel?.dismiss()
 
         let panel = HoverPanel()
+        panel.goldProvider = selectedProvider
+        panel.loadGoldTrend = { [weak self] provider, start, end in
+            guard let self else { throw GoldHistoryError.database("应用已关闭") }
+            return try await self.goldHistoryRecorder.trend(provider: provider, from: start, to: end)
+        }
         panel.show(below: buttonRect, data: buildHoverPanelData())
         hoverPanel = panel
     }
@@ -1996,11 +2001,19 @@ struct HoverPanelData {
 
 @MainActor
 final class HoverPanel {
+    var goldProvider: GoldProvider?
+    var loadGoldTrend: ((GoldProvider, Date, Date) async throws -> GoldTrend)?
     private var window: NSPanel?
     private var buttonRect: NSRect = .zero
     private var displayedStocks: [String: StockRow] = [:]
     private var displayedHolidays: [String: String] = [:]
     private var hoveredQuoteCode: String?
+    private let goldSparkline = GoldHoverSparkline()
+    private let goldTrendRange = NSSegmentedControl()
+    private let goldTrendSummary = NSTextField(labelWithString: "正在读取金价记录…")
+    private var goldTrendTask: Task<Void, Never>?
+    private var goldTrendToken = UUID()
+    private var lastGoldTrendMinute: Int64?
 
     // Mutable labels for live updates
     private var priceLabel: NSTextField?
@@ -2089,6 +2102,27 @@ final class HoverPanel {
         cLabel.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(cLabel)
         self.changeLabel = cLabel
+
+        goldTrendRange.segmentCount = 4
+        for (index, range) in GoldTrendRange.allCases.prefix(4).enumerated() {
+            goldTrendRange.setLabel(range.title, forSegment: index)
+        }
+        goldTrendRange.selectedSegment = GoldTrendRange.day.rawValue
+        goldTrendRange.target = self
+        goldTrendRange.action = #selector(goldTrendRangeChanged)
+        goldTrendRange.controlSize = .small
+        goldTrendRange.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(goldTrendRange)
+
+        goldTrendSummary.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        goldTrendSummary.identifier = NSUserInterfaceItemIdentifier("goldTrendSummary")
+        goldTrendSummary.textColor = valueColor
+        goldTrendSummary.lineBreakMode = .byTruncatingTail
+        goldTrendSummary.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(goldTrendSummary)
+        goldSparkline.translatesAutoresizingMaskIntoConstraints = false
+        goldSparkline.onHover = { [weak self] sample in self?.updateGoldTrendSummary(hovered: sample) }
+        container.addSubview(goldSparkline)
 
         // --- Divider 1 ---
         let divider1 = makeDivider()
@@ -2310,6 +2344,17 @@ final class HoverPanel {
             cLabel.topAnchor.constraint(equalTo: pLabel.bottomAnchor, constant: 2),
             cLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
 
+            goldTrendRange.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            goldTrendRange.topAnchor.constraint(equalTo: providerLabel.topAnchor),
+            goldTrendSummary.leadingAnchor.constraint(equalTo: goldSparkline.leadingAnchor),
+            goldTrendSummary.trailingAnchor.constraint(equalTo: goldTrendRange.trailingAnchor),
+            goldTrendSummary.topAnchor.constraint(equalTo: goldTrendRange.bottomAnchor, constant: 2),
+            goldSparkline.leadingAnchor.constraint(equalTo: container.trailingAnchor, constant: -370),
+            goldSparkline.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            goldSparkline.topAnchor.constraint(equalTo: goldTrendSummary.bottomAnchor, constant: 2),
+            goldSparkline.bottomAnchor.constraint(lessThanOrEqualTo: divider1.topAnchor, constant: -3),
+            goldSparkline.heightAnchor.constraint(equalToConstant: 28),
+
             divider1.topAnchor.constraint(equalTo: cLabel.bottomAnchor, constant: 12),
             divider1.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
             divider1.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
@@ -2465,6 +2510,7 @@ final class HoverPanel {
         )
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.level = .popUpMenu
         panel.hasShadow = true
         panel.contentView = container
@@ -2480,18 +2526,92 @@ final class HoverPanel {
         self.window = panel
         displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
         displayedHolidays = data.holidays
+        refreshGoldTrend()
     }
 
     func updateHoveredQuote(at screenPoint: NSPoint) {
         guard let window, let content = window.contentView else { return }
         let inWindow = window.convertFromScreen(NSRect(origin: screenPoint, size: .zero)).origin
         let point = content.convert(inWindow, from: nil)
+        goldSparkline.updateHover(at: goldSparkline.convert(point, from: content))
         hoveredQuoteCode = HoverPanelInteraction.quoteCode(
             at: point,
             titles: stockTitleLabels.mapValues(\.frame),
             prices: stockValueLabels.mapValues(\.frame)
         )
         refreshHoveredQuote()
+    }
+
+    @objc private func goldTrendRangeChanged() {
+        lastGoldTrendMinute = nil
+        refreshGoldTrend()
+    }
+
+    private func refreshGoldTrend() {
+        let now = Date()
+        let minute = Int64(now.timeIntervalSince1970 / 60)
+        guard lastGoldTrendMinute != minute else { return }
+        lastGoldTrendMinute = minute
+        goldTrendToken = UUID()
+        let token = goldTrendToken
+        goldTrendTask?.cancel()
+        goldSparkline.trend = nil
+        guard let goldProvider, let loadGoldTrend,
+              let range = GoldTrendRange(rawValue: goldTrendRange.selectedSegment) else {
+            goldTrendSummary.stringValue = "暂无本地趋势数据"
+            return
+        }
+        goldTrendSummary.stringValue = "正在读取\(range.title)金价…"
+        do {
+            let (start, end) = try range.dates(now: now)
+            goldTrendTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let trend = try await loadGoldTrend(goldProvider, start, end)
+                    guard !Task.isCancelled, self.goldTrendToken == token else { return }
+                    self.goldSparkline.trend = trend
+                    self.updateGoldTrendSummary(hovered: nil)
+                } catch {
+                    guard !Task.isCancelled, self.goldTrendToken == token else { return }
+                    self.goldTrendSummary.stringValue = "趋势读取失败（查看提示）"
+                    self.goldTrendSummary.toolTip = error.localizedDescription
+                    NSLog("MarketBar: gold hover trend failed: %@", error.localizedDescription)
+                }
+                self.goldTrendTask = nil
+            }
+        } catch {
+            goldTrendSummary.stringValue = "无法选择该时间范围"
+            goldTrendSummary.toolTip = error.localizedDescription
+        }
+    }
+
+    private func updateGoldTrendSummary(hovered: GoldHistorySample?) {
+        if let hovered {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MM/dd HH:mm"
+            goldTrendSummary.stringValue = String(
+                format: "%@ · ¥%.2f / 克", formatter.string(from: hovered.sampledAt), hovered.price
+            )
+        } else if let trend = goldSparkline.trend, let high = trend.high, let low = trend.low {
+            let formatter = DateFormatter()
+            formatter.dateFormat = Calendar.current.isDateInToday(trend.first?.sampledAt ?? trend.start)
+                ? "HH:mm" : "MM/dd HH:mm"
+            goldTrendSummary.stringValue = String(
+                format: "最高 ¥%.2f · 最低 ¥%.2f / 克 · 始 %@",
+                high.price, low.price, formatter.string(from: trend.first?.sampledAt ?? trend.start)
+            )
+            let complete = DateFormatter()
+            complete.dateStyle = .medium
+            complete.timeStyle = .short
+            if let first = trend.first, let last = trend.last {
+                goldTrendSummary.toolTip = "仅显示已采集时段：\(complete.string(from: first.sampledAt)) 至 \(complete.string(from: last.sampledAt))；空档不补线"
+            }
+        } else if goldSparkline.trend != nil {
+            goldTrendSummary.stringValue = "所选范围暂无采集记录"
+        }
+        if hovered != nil || goldSparkline.trend?.samples.isEmpty == true {
+            goldTrendSummary.toolTip = goldTrendSummary.stringValue
+        }
     }
 
     private func refreshHoveredQuote() {
@@ -2520,6 +2640,7 @@ final class HoverPanel {
         }
         displayedStocks = Dictionary(data.stocks.map { ($0.quote.code, $0) }, uniquingKeysWith: { first, _ in first })
         displayedHolidays = data.holidays
+        refreshGoldTrend()
         refreshHoveredQuote()
         priceLabel?.stringValue = "\u{00A5} " + data.price
         changeLabel?.stringValue = "\(data.changeAmount)  \(data.changePercent)"
@@ -2584,6 +2705,10 @@ final class HoverPanel {
     }
 
     func dismiss() {
+        goldTrendToken = UUID()
+        goldTrendTask?.cancel()
+        goldTrendTask = nil
+        lastGoldTrendMinute = nil
         guard let window = self.window else { return }
         self.window = nil
         displayedStocks.removeAll()
