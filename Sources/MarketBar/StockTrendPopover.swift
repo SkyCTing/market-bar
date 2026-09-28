@@ -180,16 +180,24 @@ private final class StockTrendPanel: NSPanel {
 @MainActor
 final class StockTrendPopover {
     private static let inlineRanges: [StockTrendRange] = [.today, .fiveDays, .month]
+    private static let kRanges: [StockTrendRange] = [.dailyCandles, .weeklyCandles, .monthlyCandles]
     private let window: StockTrendPanel
     private let titleLabel = NSTextField(labelWithString: "")
     private let latestPriceLabel = NSTextField(labelWithString: "")
-    private let klineButton = NSButton(title: "K 线图…", target: nil, action: nil)
+    private let klineButton = NSButton(title: "放大", target: nil, action: nil)
+    private let lineTitle = NSTextField(labelWithString: "价格折线")
+    private let kTitle = NSTextField(labelWithString: "蜡烛 K 线")
+    private let separator = NSView()
     private let rangeControl = NSSegmentedControl()
+    private let kRangeControl = NSSegmentedControl()
     private let summaryLabel = NSTextField(labelWithString: "")
-    private let detailLabel = NSTextField(labelWithString: "")
+    private let kSummaryLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "上方看价格折线 · 下方看开高低收蜡烛")
     private let plot = StockTrendPlot()
+    private let kPlot = StockTrendPlot()
     private var decimalPlaces = 2
     var onRangeChange: (() -> Void)?
+    var onKRangeChange: (() -> Void)?
     var onOpenKline: ((StockQuote) -> Void)?
     private var latestQuote: StockQuote?
     private(set) var code: String?
@@ -197,12 +205,16 @@ final class StockTrendPopover {
         let index = rangeControl.selectedSegment
         return Self.inlineRanges.indices.contains(index) ? Self.inlineRanges[index] : .today
     }
+    var kRange: StockTrendRange {
+        let index = kRangeControl.selectedSegment
+        return Self.kRanges.indices.contains(index) ? Self.kRanges[index] : .dailyCandles
+    }
     var frame: NSRect { window.frame }
     var isVisible: Bool { window.isVisible }
 
     init() {
         window = StockTrendPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 245),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 420),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
@@ -223,7 +235,7 @@ final class StockTrendPopover {
         content.layer?.borderWidth = 0.5
         window.contentView = content
         content.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        content.heightAnchor.constraint(equalToConstant: 245).isActive = true
+        content.heightAnchor.constraint(equalToConstant: 420).isActive = true
 
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -233,17 +245,26 @@ final class StockTrendPopover {
         latestPriceLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendLatestPrice")
         klineButton.isBordered = false
         klineButton.font = .systemFont(ofSize: 11, weight: .semibold)
-        klineButton.contentTintColor = NSColor(calibratedRed: 0.94, green: 0.72, blue: 0.34, alpha: 1)
+        klineButton.contentTintColor = .secondaryLabelColor
+        klineButton.toolTip = "可选：在独立窗口放大 K 线"
         klineButton.identifier = NSUserInterfaceItemIdentifier("openStockKline")
         klineButton.target = self
         klineButton.action = #selector(openKline)
+        for label in [lineTitle, kTitle] {
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = NSColor(calibratedRed: 0.94, green: 0.72, blue: 0.34, alpha: 1)
+        }
         summaryLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         summaryLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendSummary")
+        kSummaryLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        kSummaryLabel.identifier = NSUserInterfaceItemIdentifier("stockKlineSummary")
         detailLabel.font = .systemFont(ofSize: 10)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.identifier = NSUserInterfaceItemIdentifier("stockTrendDetail")
         detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.toolTip = "休市时间已压缩；未收盘的 K 线为暂值"
         rangeControl.segmentCount = Self.inlineRanges.count
+        rangeControl.identifier = NSUserInterfaceItemIdentifier("stockLineRange")
         rangeControl.appearance = NSAppearance(named: .darkAqua)
         for (index, range) in Self.inlineRanges.enumerated() {
             rangeControl.setLabel(range.title, forSegment: index)
@@ -252,39 +273,76 @@ final class StockTrendPopover {
         rangeControl.controlSize = .small
         rangeControl.target = self
         rangeControl.action = #selector(changeRange)
-        plot.onHover = { [weak self] point in self?.showDetail(point) }
+        kRangeControl.segmentCount = Self.kRanges.count
+        kRangeControl.identifier = NSUserInterfaceItemIdentifier("stockKRange")
+        kRangeControl.appearance = NSAppearance(named: .darkAqua)
+        for (index, range) in Self.kRanges.enumerated() {
+            kRangeControl.setLabel(range.title, forSegment: index)
+        }
+        kRangeControl.selectedSegment = 0
+        kRangeControl.controlSize = .small
+        kRangeControl.target = self
+        kRangeControl.action = #selector(changeKRange)
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.17).cgColor
+        plot.identifier = NSUserInterfaceItemIdentifier("stockLinePlot")
+        kPlot.identifier = NSUserInterfaceItemIdentifier("stockKPlot")
+        plot.onHover = { [weak self] point in self?.showLineDetail(point) }
+        kPlot.onHover = { [weak self] point in self?.showKDetail(point) }
 
-        for view in [titleLabel, latestPriceLabel, klineButton, summaryLabel, detailLabel, rangeControl, plot] {
+        for view in [titleLabel, latestPriceLabel, klineButton, lineTitle, rangeControl, plot,
+                     summaryLabel, separator, kTitle, kRangeControl, kPlot, kSummaryLabel, detailLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
             titleLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rangeControl.leadingAnchor, constant: -6),
-            rangeControl.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            rangeControl.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
             latestPriceLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7),
             latestPriceLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             latestPriceLabel.trailingAnchor.constraint(lessThanOrEqualTo: klineButton.leadingAnchor, constant: -8),
             klineButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             klineButton.centerYAnchor.constraint(equalTo: latestPriceLabel.centerYAnchor),
+            lineTitle.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            lineTitle.topAnchor.constraint(equalTo: latestPriceLabel.bottomAnchor, constant: 9),
+            rangeControl.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            rangeControl.centerYAnchor.constraint(equalTo: lineTitle.centerYAnchor),
             summaryLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             summaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
             plot.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             plot.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            plot.topAnchor.constraint(equalTo: latestPriceLabel.bottomAnchor, constant: 6),
+            plot.topAnchor.constraint(equalTo: lineTitle.bottomAnchor, constant: 5),
             plot.bottomAnchor.constraint(equalTo: summaryLabel.topAnchor, constant: -5),
-            summaryLabel.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -6),
+            separator.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 9),
+            separator.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            separator.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            separator.heightAnchor.constraint(equalToConstant: 0.5),
+            kTitle.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            kTitle.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 9),
+            kRangeControl.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            kRangeControl.centerYAnchor.constraint(equalTo: kTitle.centerYAnchor),
+            kPlot.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            kPlot.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            kPlot.topAnchor.constraint(equalTo: kTitle.bottomAnchor, constant: 5),
+            kPlot.bottomAnchor.constraint(equalTo: kSummaryLabel.topAnchor, constant: -5),
+            kSummaryLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            kSummaryLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
+            kSummaryLabel.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -8),
             detailLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             detailLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             detailLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            plot.heightAnchor.constraint(equalTo: kPlot.heightAnchor),
+            plot.heightAnchor.constraint(greaterThanOrEqualToConstant: 85),
         ])
     }
 
     func show(code: String, name: String, market: StockMarket, quote: StockQuote,
               row: NSRect, alongside panel: NSRect) {
-        if self.code != code { rangeControl.selectedSegment = StockTrendRange.today.rawValue }
+        if self.code != code {
+            rangeControl.selectedSegment = 0
+            kRangeControl.selectedSegment = 0
+        }
         self.code = code
         titleLabel.stringValue = "\(name) · \(market == .hongKong ? "HK" : "A")"
         titleLabel.toolTip = "\(name) (\(code))"
@@ -317,16 +375,24 @@ final class StockTrendPopover {
         guard decimalPlaces != precision else { return }
         decimalPlaces = precision
         plot.decimalPlaces = precision
-        if let trend = plot.trend { show(trend) }
+        kPlot.decimalPlaces = precision
+        if let trend = plot.trend { showLine(trend) }
+        if let trend = kPlot.trend { showK(trend) }
     }
 
-    func showLoading() {
+    func showLineLoading() {
         plot.trend = nil
         summaryLabel.stringValue = "正在读取\(range.title)走势…"
-        detailLabel.stringValue = "价格折线 · 休市时段已压缩；日线未复权"
+        showDefaultDetail()
     }
 
-    func show(_ trend: StockTrend) {
+    func showKLoading() {
+        kPlot.trend = nil
+        kSummaryLabel.stringValue = "正在读取\(kRange.title)…"
+        showDefaultDetail()
+    }
+
+    func showLine(_ trend: StockTrend) {
         plot.trend = trend
         guard let high = trend.high, let low = trend.low, let latest = trend.latest else {
             summaryLabel.stringValue = "没有可用价格点"
@@ -339,28 +405,56 @@ final class StockTrendPopover {
             StockTrendPriceFormat.text(low.price, decimalPlaces: decimalPlaces), trend.market.currency
         )
         let timestamp = trend.market.formattedQuoteTime(latest.date)
-        detailLabel.stringValue = "\(trend.market.timeZoneName) · 截至 \(timestamp) · \(trend.points.count) 点 · 交易时间折线"
-        detailLabel.toolTip = detailLabel.stringValue
-            + "；休市时段已压缩，不是蜡烛 K 线"
-            + (trend.range.isDailyClose ? "；当日日线尚未收盘时是盘中暂值" : "")
+        summaryLabel.toolTip = "\(trend.market.timeZoneName) · 截至 \(timestamp) · \(trend.points.count) 点 · 休市时段已压缩"
     }
 
-    func showError(_ error: Error) {
+    func showK(_ trend: StockTrend) {
+        guard trend.range.isCandlestick, let high = trend.highestCandle, let low = trend.lowestCandle,
+              let latest = trend.candles.last else {
+            showKError(StockTrendError.unavailable("没有完整的开高低收数据"))
+            return
+        }
+        kPlot.trend = trend
+        kSummaryLabel.stringValue = String(
+            format: "最高 %@ · 最低 %@ %@", StockTrendPriceFormat.text(high.high, decimalPlaces: decimalPlaces),
+            StockTrendPriceFormat.text(low.low, decimalPlaces: decimalPlaces), trend.market.currency
+        )
+        kSummaryLabel.toolTip = "\(trend.range.title) · \(trend.candles.count) 根 · 截至 \(trend.market.dateString(for: latest.date)) · 未复权；当前周期未结束时为暂值"
+    }
+
+    func showLineError(_ error: Error) {
         plot.trend = nil
-        summaryLabel.stringValue = "走势暂不可用"
-        detailLabel.stringValue = error.localizedDescription
-        detailLabel.toolTip = error.localizedDescription
+        summaryLabel.stringValue = "折线暂不可用（查看提示）"
+        summaryLabel.toolTip = error.localizedDescription
+    }
+
+    func showKError(_ error: Error) {
+        kPlot.trend = nil
+        kSummaryLabel.stringValue = "K 线暂不可用（查看提示）"
+        kSummaryLabel.toolTip = error.localizedDescription
     }
 
     func updateHover(at screenPoint: NSPoint) {
         let inWindow = window.convertFromScreen(NSRect(origin: screenPoint, size: .zero)).origin
-        let point = plot.convert(inWindow, from: nil)
-        plot.updateHover(at: point)
+        let linePoint = plot.convert(inWindow, from: nil)
+        let kPoint = kPlot.convert(inWindow, from: nil)
+        let outside = NSPoint(x: -1, y: -1)
+        if plot.bounds.contains(linePoint) {
+            kPlot.updateHover(at: outside)
+            plot.updateHover(at: linePoint)
+        } else if kPlot.bounds.contains(kPoint) {
+            plot.updateHover(at: outside)
+            kPlot.updateHover(at: kPoint)
+        } else {
+            plot.updateHover(at: outside)
+            kPlot.updateHover(at: outside)
+            showDefaultDetail()
+        }
     }
 
-    private func showDetail(_ point: StockTrendPoint?) {
+    private func showLineDetail(_ point: StockTrendPoint?) {
         guard let trend = plot.trend else { return }
-        guard let point else { show(trend); return }
+        guard let point else { showDefaultDetail(); return }
         detailLabel.stringValue = String(
             format: "%@ %@ · %@ %@", trend.market.timeZoneName,
             trend.market.formattedQuoteTime(point.date),
@@ -369,7 +463,28 @@ final class StockTrendPopover {
         detailLabel.toolTip = detailLabel.stringValue
     }
 
+    private func showKDetail(_ point: StockTrendPoint?) {
+        guard let trend = kPlot.trend else { return }
+        guard let point else { showDefaultDetail(); return }
+        guard let bar = trend.candles.first(where: { $0.date == point.date }) else { return }
+        detailLabel.stringValue = String(
+            format: "%@ 开%@ 高%@ 低%@ 收%@",
+            trend.market.dateString(for: bar.date),
+            StockTrendPriceFormat.text(bar.open, decimalPlaces: decimalPlaces),
+            StockTrendPriceFormat.text(bar.high, decimalPlaces: decimalPlaces),
+            StockTrendPriceFormat.text(bar.low, decimalPlaces: decimalPlaces),
+            StockTrendPriceFormat.text(bar.close, decimalPlaces: decimalPlaces)
+        )
+        detailLabel.toolTip = detailLabel.stringValue + " \(trend.market.currency) · \(trend.range.title) 未复权"
+    }
+
+    private func showDefaultDetail() {
+        detailLabel.stringValue = "上方看价格折线 · 下方看开高低收蜡烛"
+        detailLabel.toolTip = "休市时间已压缩；未收盘的 K 线为暂值"
+    }
+
     @objc private func changeRange() { onRangeChange?() }
+    @objc private func changeKRange() { onKRangeChange?() }
 
     @objc private func openKline() {
         guard let latestQuote else { return }
@@ -380,6 +495,7 @@ final class StockTrendPopover {
         code = nil
         latestQuote = nil
         plot.trend = nil
+        kPlot.trend = nil
         window.orderOut(nil)
     }
 }

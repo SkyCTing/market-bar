@@ -2065,8 +2065,10 @@ final class HoverPanel {
     private var hoveredQuoteCode: String?
     private var stockTrendCode: String?
     private var stockTrendPopover: StockTrendPopover?
-    private var stockTrendTask: Task<Void, Never>?
-    private var stockTrendToken = UUID()
+    private var stockLineTask: Task<Void, Never>?
+    private var stockKTask: Task<Void, Never>?
+    private var stockLineToken = UUID()
+    private var stockKToken = UUID()
     private var stockTrendAnchor: NSRect?
     private let goldSparkline = GoldHoverSparkline()
     private let goldTrendRange = NSSegmentedControl()
@@ -2632,38 +2634,66 @@ final class HoverPanel {
         stockTrendCode = code
         let popup = stockTrendPopover ?? StockTrendPopover()
         stockTrendPopover = popup
-        popup.onRangeChange = { [weak self] in self?.requestStockTrend(after: .zero) }
+        popup.onRangeChange = { [weak self] in self?.requestStockLine(after: .zero) }
+        popup.onKRangeChange = { [weak self] in self?.requestStockK(after: .zero) }
         popup.onOpenKline = { [weak self] quote in self?.onOpenStockKline?(quote) }
         let rowFrame = window.convertToScreen(content.convert(title.frame, to: nil))
         stockTrendAnchor = rowFrame
         popup.show(code: code, name: row.quote.name, market: market, quote: row.quote,
                    row: rowFrame, alongside: window.frame)
-        requestStockTrend(after: .milliseconds(180))
+        requestStockLine(after: .milliseconds(180))
+        requestStockK(after: .milliseconds(180))
     }
 
-    private func requestStockTrend(after delay: Duration) {
-        stockTrendToken = UUID()
-        let token = stockTrendToken
-        stockTrendTask?.cancel()
+    private func requestStockLine(after delay: Duration) {
+        stockLineToken = UUID()
+        let token = stockLineToken
+        stockLineTask?.cancel()
         guard let code = stockTrendCode, let popup = stockTrendPopover,
               let loadStockTrend else { return }
         let range = popup.range
-        popup.showLoading()
-        stockTrendTask = Task { [weak self] in
+        popup.showLineLoading()
+        stockLineTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await Task.sleep(for: delay)
                 let trend = try await loadStockTrend(code, range)
-                guard !Task.isCancelled, self.stockTrendToken == token, self.stockTrendCode == code else { return }
-                popup.show(trend)
+                guard !Task.isCancelled, self.stockLineToken == token, self.stockTrendCode == code else { return }
+                popup.showLine(trend)
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled, self.stockTrendToken == token, self.stockTrendCode == code else { return }
-                popup.showError(error)
-                NSLog("MarketBar: stock trend %@ failed: %@", code, error.localizedDescription)
+                guard !Task.isCancelled, self.stockLineToken == token, self.stockTrendCode == code else { return }
+                popup.showLineError(error)
+                NSLog("MarketBar: stock line %@ failed: %@", code, error.localizedDescription)
             }
-            self.stockTrendTask = nil
+            self.stockLineTask = nil
+        }
+    }
+
+    private func requestStockK(after delay: Duration) {
+        stockKToken = UUID()
+        let token = stockKToken
+        stockKTask?.cancel()
+        guard let code = stockTrendCode, let popup = stockTrendPopover,
+              let loadStockTrend else { return }
+        let range = popup.kRange
+        popup.showKLoading()
+        stockKTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: delay)
+                let trend = try await loadStockTrend(code, range)
+                guard !Task.isCancelled, self.stockKToken == token, self.stockTrendCode == code else { return }
+                popup.showK(trend)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, self.stockKToken == token, self.stockTrendCode == code else { return }
+                popup.showKError(error)
+                NSLog("MarketBar: stock K-line %@ failed: %@", code, error.localizedDescription)
+            }
+            self.stockKTask = nil
         }
     }
 
@@ -2671,9 +2701,12 @@ final class HoverPanel {
         guard stockTrendCode != nil else { return }
         stockTrendCode = nil
         stockTrendAnchor = nil
-        stockTrendToken = UUID()
-        stockTrendTask?.cancel()
-        stockTrendTask = nil
+        stockLineToken = UUID()
+        stockKToken = UUID()
+        stockLineTask?.cancel()
+        stockKTask?.cancel()
+        stockLineTask = nil
+        stockKTask = nil
         stockTrendPopover?.dismiss()
     }
 

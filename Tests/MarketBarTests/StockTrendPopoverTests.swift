@@ -80,6 +80,16 @@ final class StockTrendPopoverTests: XCTestCase {
             await calls.record(code, range)
             let market = try XCTUnwrap(StockMarket.forCode(code))
             let date = try XCTUnwrap(market.quoteTime(from: "20260928093000"))
+            if range.isCandlestick {
+                let earlier = try XCTUnwrap(market.quoteTime(from: "20260925093000"))
+                let candles = [
+                    StockCandle(date: earlier, open: 40, high: 43, low: 39, close: 40.5),
+                    StockCandle(date: date, open: 41.5, high: 42, low: 38, close: 41),
+                ]
+                return StockTrend(code: code, market: market, range: range,
+                                  points: candles.map { StockTrendPoint(date: $0.date, price: $0.close) },
+                                  candles: candles)
+            }
             return StockTrend(code: code, market: market, range: range, points: [
                 StockTrendPoint(date: date, price: code == "hk00700" ? 440 : 40),
                 StockTrendPoint(date: date.addingTimeInterval(60), price: code == "hk00700" ? 443 : 41),
@@ -93,17 +103,26 @@ final class StockTrendPopoverTests: XCTestCase {
         try await waitUntil {
             guard let popup = self.popup(title: "A股\(suffix)") else { return false }
             return (try? self.label("stockTrendSummary", in: popup).stringValue.contains("最高价格 41.00")) == true
+                && (try? self.label("stockKlineSummary", in: popup).stringValue.contains("最高 43.00 · 最低 38.00")) == true
         }
         let firstPopup = try XCTUnwrap(popup(title: "A股\(suffix)"))
         let latestPrice = try label("stockTrendLatestPrice", in: firstPopup)
         XCTAssertEqual(latestPrice.stringValue, "最近价格 40.64 CNY")
         let title = try label("stockTrendTitle", in: firstPopup)
         let summary = try label("stockTrendSummary", in: firstPopup)
-        let chart = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? StockTrendPlot }.first)
+        let chart = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? StockTrendPlot }
+            .first { $0.identifier?.rawValue == "stockLinePlot" })
+        let kChart = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? StockTrendPlot }
+            .first { $0.identifier?.rawValue == "stockKPlot" })
+        let kSummary = try label("stockKlineSummary", in: firstPopup)
         firstPopup.contentView?.layoutSubtreeIfNeeded()
         XCTAssertLessThan(latestPrice.frame.maxY, title.frame.minY)
         XCTAssertLessThan(chart.frame.maxY, latestPrice.frame.minY)
         XCTAssertLessThan(summary.frame.maxY, chart.frame.minY)
+        XCTAssertLessThan(kChart.frame.maxY, summary.frame.minY)
+        XCTAssertLessThan(kSummary.frame.maxY, kChart.frame.minY)
+        XCTAssertEqual(kChart.trend?.range, .dailyCandles)
+        XCTAssertEqual(kChart.trend?.candles.count, 2)
         XCTAssertEqual(firstPopup.frame.width, 360, accuracy: 0.5)
         XCTAssertFalse(firstPopup.frame.intersects(window.frame),
                        "Popup must not cover another stock name in the parent panel")
@@ -121,13 +140,23 @@ final class StockTrendPopoverTests: XCTestCase {
         XCTAssertTrue(panel.containsInteraction(popupMid, button: .zero))
         panel.updateHoveredQuote(at: popupMid)
         XCTAssertNotNil(popup(title: "A股\(suffix)"))
-        let control = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? NSSegmentedControl }.first)
+        let control = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? NSSegmentedControl }
+            .first { $0.identifier?.rawValue == "stockLineRange" })
+        let kControl = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? NSSegmentedControl }
+            .first { $0.identifier?.rawValue == "stockKRange" })
+        XCTAssertEqual(control.segmentCount, 3)
+        XCTAssertEqual(kControl.segmentCount, 3)
         control.selectedSegment = StockTrendRange.month.rawValue
         _ = NSApp.sendAction(try XCTUnwrap(control.action), to: control.target, from: control)
         try await waitUntil {
             (try? self.label("stockTrendSummary", in: firstPopup).stringValue.contains("最高日线 41.00")) == true
         }
-        XCTAssertEqual(control.segmentCount, 3)
+        XCTAssertEqual(kSummary.stringValue, "最高 43.00 · 最低 38.00 CNY")
+        kControl.selectedSegment = 1
+        _ = NSApp.sendAction(try XCTUnwrap(kControl.action), to: kControl.target, from: kControl)
+        try await waitUntil { kChart.trend?.range == .weeklyCandles }
+        XCTAssertTrue(summary.stringValue.contains("最高日线 41.00"),
+                      "Switching K timeframe must not reset the line chart")
         let klineButton = try XCTUnwrap(firstPopup.contentView?.subviews.compactMap { $0 as? NSButton }
             .first { $0.identifier?.rawValue == "openStockKline" })
         klineButton.performClick(nil)
@@ -138,12 +167,16 @@ final class StockTrendPopoverTests: XCTestCase {
         try await waitUntil {
             guard let popup = self.popup(title: "港股\(suffix)") else { return false }
             return (try? self.label("stockTrendSummary", in: popup).stringValue.contains("最高价格 443.00")) == true
+                && (try? self.label("stockKlineSummary", in: popup).stringValue.contains("最高 43.00")) == true
         }
         try hover("美股\(suffix)", in: window, panel: panel)
         XCTAssertNil(popup(title: "美股\(suffix)"))
         XCTAssertNil(popup(title: "港股\(suffix)"))
         let requests = await calls.requests
-        XCTAssertEqual(requests.map(\.code), ["sh600036", "sh600036", "hk00700"])
+        XCTAssertEqual(Set(requests.filter { $0.code == "sh600036" }.map(\.range)),
+                       Set([.today, .month, .dailyCandles, .weeklyCandles]))
+        XCTAssertEqual(Set(requests.filter { $0.code == "hk00700" }.map(\.range)),
+                       Set([.today, .dailyCandles]))
         XCTAssertFalse(requests.contains { $0.code.hasPrefix("us") })
     }
 
@@ -164,6 +197,29 @@ final class StockTrendPopoverTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(260))
         let requests = await calls.requests
         XCTAssertTrue(requests.isEmpty)
+    }
+
+    func testKFailureDoesNotEraseLineAndReportsReason() async throws {
+        let suffix = UUID().uuidString
+        let panel = HoverPanel()
+        panel.loadStockTrend = { code, range in
+            if range.isCandlestick { throw StockTrendError.unavailable("K 接口测试失败") }
+            let market = try XCTUnwrap(StockMarket.forCode(code))
+            let date = try XCTUnwrap(market.quoteTime(from: "20260928093000"))
+            return StockTrend(code: code, market: market, range: range,
+                              points: [StockTrendPoint(date: date, price: 40.64)])
+        }
+        let screen = try XCTUnwrap(NSScreen.main)
+        panel.show(below: NSRect(x: screen.frame.midX, y: screen.frame.maxY - 30, width: 60, height: 24), data: data(suffix))
+        defer { panel.dismiss() }
+        let parent = try parent(suffix)
+        try hover("A股\(suffix)", in: parent, panel: panel)
+        let popover = try XCTUnwrap(popup(title: "A股\(suffix)"))
+        let line = try label("stockTrendSummary", in: popover)
+        let kline = try label("stockKlineSummary", in: popover)
+        try await waitUntil { line.stringValue.contains("最高价格 40.64") && kline.stringValue.contains("暂不可用") }
+        XCTAssertTrue(kline.toolTip?.contains("K 接口测试失败") == true)
+        XCTAssertFalse(line.stringValue.contains("暂不可用"))
     }
 
     func testStockHoverButtonOpensSeparateKlineWindowForTheSelectedTicker() async throws {
@@ -245,7 +301,7 @@ final class StockTrendPopoverTests: XCTestCase {
         XCTAssertGreaterThan(green, 5)
     }
 
-    func testETFLineHighLowAndAxisKeepThreeDecimals() throws {
+    func testETFStackedLineAndKKeepThreeDecimals() throws {
         _ = NSApplication.shared
         let market = StockMarket.mainland
         let first = try XCTUnwrap(market.quoteTime(from: "20260925093000"))
@@ -260,25 +316,42 @@ final class StockTrendPopoverTests: XCTestCase {
                      alongside: NSRect(x: 430, y: 150, width: 780, height: 520))
         defer { popover.dismiss() }
         let window = try XCTUnwrap(popup(title: "医疗ETF"))
-        let chart = try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? StockTrendPlot }.first)
+        let chart = try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? StockTrendPlot }
+            .first { $0.identifier?.rawValue == "stockLinePlot" })
+        let kChart = try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? StockTrendPlot }
+            .first { $0.identifier?.rawValue == "stockKPlot" })
         let latest = try label("stockTrendLatestPrice", in: window)
         let summary = try label("stockTrendSummary", in: window)
+        let kSummary = try label("stockKlineSummary", in: window)
+        let detail = try label("stockTrendDetail", in: window)
         XCTAssertEqual(latest.stringValue, "最近价格 0.349 CNY")
         XCTAssertEqual(chart.decimalPlaces, 3)
+        XCTAssertEqual(kChart.decimalPlaces, 3)
         let candles = [
             StockCandle(date: first, open: 0.342, high: 0.360, low: 0.341, close: 0.345),
             StockCandle(date: last, open: 0.345, high: 0.358, low: 0.343, close: 0.349),
         ]
         let points = candles.map { StockTrendPoint(date: $0.date, price: $0.close) }
-        popover.show(StockTrend(code: quote.code, market: market, range: .month, points: points, candles: candles))
+        popover.showLine(StockTrend(code: quote.code, market: market, range: .month, points: points, candles: candles))
+        popover.showK(StockTrend(code: quote.code, market: market, range: .dailyCandles,
+                                 points: points, candles: candles))
         XCTAssertEqual(summary.stringValue, "最高日线 0.349 · 最低日线 0.345 CNY")
+        XCTAssertEqual(kSummary.stringValue, "最高 0.360 · 最低 0.341 CNY")
+        let content = try XCTUnwrap(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        let plotPoint = content.convert(NSPoint(x: 53, y: kChart.bounds.midY), from: kChart)
+        let screen = window.convertToScreen(NSRect(origin: content.convert(plotPoint, to: nil), size: .zero)).origin
+        popover.updateHover(at: screen)
+        XCTAssertTrue(detail.stringValue.contains("开0.342 高0.360 低0.341 收0.345"))
 
         var morePrecise = StockQuote(code: quote.code, name: quote.name, price: "0.3490",
                                      raise: 0, raisePercent: 0, volume: 0, sessionDate: "2026-09-28")
         morePrecise.quotedAt = last
         popover.updateQuote(morePrecise, market: market)
         XCTAssertEqual(chart.decimalPlaces, 4)
+        XCTAssertEqual(kChart.decimalPlaces, 4)
         XCTAssertEqual(summary.stringValue, "最高日线 0.3490 · 最低日线 0.3450 CNY")
+        XCTAssertEqual(kSummary.stringValue, "最高 0.3600 · 最低 0.3410 CNY")
         XCTAssertEqual(latest.stringValue, "最近价格 0.3490 CNY")
     }
 }
