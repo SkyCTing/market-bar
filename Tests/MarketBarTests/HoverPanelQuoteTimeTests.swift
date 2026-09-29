@@ -69,8 +69,10 @@ final class HoverPanelQuoteTimeTests: XCTestCase {
         panel.updateContent(data: makeData(quote))
         XCTAssertFalse(result.stringValue.contains("最高"))
         XCTAssertFalse(price.toolTip?.contains("报价日高低") == true)
+        let goldPrice = try XCTUnwrap(labels.first { $0.stringValue == "¥ 0" })
         panel.updateHoveredQuote(at: window.convertToScreen(NSRect(
-            origin: content.convert(NSPoint(x: 2, y: 2), to: nil), size: .zero
+            origin: content.convert(NSPoint(x: goldPrice.frame.midX, y: goldPrice.frame.midY), to: nil),
+            size: .zero
         )).origin)
         XCTAssertEqual(result.stringValue, "悬停股票名称或现价查看")
         XCTAssertNil(result.toolTip)

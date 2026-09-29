@@ -2092,8 +2092,8 @@ final class HoverPanel {
     private var stockProfitLabels: [String: NSTextField] = [:]
     private var summaryLabels: [String: NSTextField] = [:]
 
-    // 自选行是四列（名称+量能 | 股数 | 现价+涨跌幅 | 当日盈亏）。
-    // 面板宽 = 内边距 × 2 + 三个间隙 + 四列宽度，这条等式有测试锁住。
+    // 自选行：名称、量能、现价、当日盈亏、股数、成本、浮动盈亏。
+    // 面板宽 = 内边距 × 2 + 六个间隙 + 七列宽度，这条等式有测试锁住。
     // 数值列宽度按实测的最宽内容定：股数 "1,100,000" 55.6pt、现价 "3936.52  -0.39%" 93.6pt、
     // 盈亏 "-1,234,567" 62.5pt；名称列吃剩余宽度（最宽 129.9pt）。
     static let panelWidth: CGFloat = 780
@@ -2284,8 +2284,8 @@ final class HoverPanel {
         }
 
         typealias StockCells = (
-            title: NSTextField, volume: NSTextField, shares: NSTextField,
-            cost: NSTextField, value: NSTextField, profit: NSTextField, floating: NSTextField
+            title: NSTextField, volume: NSTextField, value: NSTextField,
+            profit: NSTextField, shares: NSTextField, cost: NSTextField, floating: NSTextField
         )
         var stockRowCells: [StockCells] = []
 
@@ -2296,10 +2296,10 @@ final class HoverPanel {
         stockRowCells.append((
             headerTitle,
             makeStockCell(Self.volumeHeader, weight: .medium, color: labelColor),
-            makeStockCell(Self.sharesHeader, weight: .regular, color: labelColor),
-            makeStockCell(Self.costHeader, weight: .regular, color: labelColor),
             makeStockCell(Self.priceHeader, weight: .regular, color: labelColor),
             makeStockCell(Self.profitHeader, weight: .regular, color: labelColor),
+            makeStockCell(Self.sharesHeader, weight: .regular, color: labelColor),
+            makeStockCell(Self.costHeader, weight: .regular, color: labelColor),
             makeStockCell(Self.floatingHeader, weight: .regular, color: labelColor)
         ))
 
@@ -2360,7 +2360,7 @@ final class HoverPanel {
                 color: HoverPalette.trendColor(row.floatingProfit, fallback: valueColor)
             )
 
-            stockRowCells.append((tl, volumeLabel, sharesLabel, costLabel, vl, profitLabel, floatingLabel))
+            stockRowCells.append((tl, volumeLabel, vl, profitLabel, sharesLabel, costLabel, floatingLabel))
             stockTitleLabels[quote.code] = tl
             stockVolumeLabels[quote.code] = volumeLabel
             stockSharesLabels[quote.code] = sharesLabel
@@ -2471,15 +2471,7 @@ final class HoverPanel {
                 cells.volume.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.volume.widthAnchor.constraint(equalToConstant: Self.volumeColumnWidth),
 
-                cells.shares.leadingAnchor.constraint(equalTo: cells.volume.trailingAnchor, constant: columnGap),
-                cells.shares.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
-                cells.shares.widthAnchor.constraint(equalToConstant: Self.sharesColumnWidth),
-
-                cells.cost.leadingAnchor.constraint(equalTo: cells.shares.trailingAnchor, constant: columnGap),
-                cells.cost.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
-                cells.cost.widthAnchor.constraint(equalToConstant: Self.costColumnWidth),
-
-                cells.value.leadingAnchor.constraint(equalTo: cells.cost.trailingAnchor, constant: columnGap),
+                cells.value.leadingAnchor.constraint(equalTo: cells.volume.trailingAnchor, constant: columnGap),
                 cells.value.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.value.widthAnchor.constraint(equalToConstant: Self.priceColumnWidth),
 
@@ -2487,7 +2479,15 @@ final class HoverPanel {
                 cells.profit.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.profit.widthAnchor.constraint(equalToConstant: Self.profitColumnWidth),
 
-                cells.floating.leadingAnchor.constraint(equalTo: cells.profit.trailingAnchor, constant: columnGap),
+                cells.shares.leadingAnchor.constraint(equalTo: cells.profit.trailingAnchor, constant: columnGap),
+                cells.shares.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.shares.widthAnchor.constraint(equalToConstant: Self.sharesColumnWidth),
+
+                cells.cost.leadingAnchor.constraint(equalTo: cells.shares.trailingAnchor, constant: columnGap),
+                cells.cost.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
+                cells.cost.widthAnchor.constraint(equalToConstant: Self.costColumnWidth),
+
+                cells.floating.leadingAnchor.constraint(equalTo: cells.cost.trailingAnchor, constant: columnGap),
                 cells.floating.centerYAnchor.constraint(equalTo: cells.title.centerYAnchor),
                 cells.floating.widthAnchor.constraint(equalToConstant: Self.floatingColumnWidth),
             ])

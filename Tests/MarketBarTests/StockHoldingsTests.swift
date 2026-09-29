@@ -3,7 +3,25 @@ import XCTest
 
 @testable import MarketBar
 
+@MainActor
 final class StockHoldingsTests: XCTestCase {
+    private var savedShares: [String: Int] = [:]
+    private var savedCosts: [String: Double] = [:]
+
+    override func setUp() async throws {
+        try await super.setUp()
+        savedShares = StockHoldings.sharesByCode
+        savedCosts = StockHoldings.costsByCode
+        StockHoldings.sharesByCode = WatchlistConfig.default.holdings
+        StockHoldings.costsByCode = WatchlistConfig.default.costs
+    }
+
+    override func tearDown() async throws {
+        StockHoldings.sharesByCode = savedShares
+        StockHoldings.costsByCode = savedCosts
+        try await super.tearDown()
+    }
+
     private func quote(
         code: String,
         price: String = "0.349",
