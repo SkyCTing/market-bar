@@ -48,6 +48,7 @@ struct PendingAlert: Codable, Equatable, Sendable {
 final class MeetingMode {
     static let enabledKey = "meetingModeEnabled"
     static let queueKey = "meetingModeQueue"
+    static let quitWeChatsKey = "meetingModeQuitWeChats"
     /// 队列上限。正常用不到（连续重复本来就会折叠成一条），
     /// 但这是个随会议时长增长、还要落盘的数组，得有个头
     static let maximumQueueLength = 100
@@ -55,6 +56,15 @@ final class MeetingMode {
     private let defaults: UserDefaults
     private(set) var isOn: Bool
     private(set) var queue: [PendingAlert]
+
+    /// 进会议模式时**被我们退掉的**微信 bundle id。
+    ///
+    /// 必须落盘：开会中途 app 重启的话，不记着这个，散会后微信就再也回不来了 ——
+    /// 用户只会发现消息一直不来，而且不知道该怪谁
+    var quitWeChatBundleIDs: [String] {
+        get { defaults.stringArray(forKey: Self.quitWeChatsKey) ?? [] }
+        set { defaults.set(newValue, forKey: Self.quitWeChatsKey) }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

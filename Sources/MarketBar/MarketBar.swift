@@ -645,6 +645,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var panelHotKey: KeyCombo? = KeyCombo.defaultPanel
     private var characterHotKey: KeyCombo? = KeyCombo.defaultCharacter
     private var meetingHotKey: KeyCombo? = KeyCombo.defaultMeeting
+    /// 开会时退出微信（默认开）—— 用户点名要的
+    private var meetingQuitsWeChat = true
+    /// 切专注模式的两个快捷指令名字，留空 = 不动专注模式
+    private var meetingStartShortcut = ""
+    private var meetingEndShortcut = ""
+    /// 会议模式的外部副作用（退微信、切专注），可注入便于测试
+    private let meetingEffects = MeetingSideEffects()
     private let hotKeyCenter = HotKeyCenter()
     private var isHoverPanelPinned = false
     /// 问 AI 时把持仓（股数/成本/浮动盈亏）也放进快照。**默认关** ——
@@ -1093,6 +1100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingItem.target = self
         meetingItem.state = meetingMode.isOn ? .on : .off
         menu.addItem(meetingItem)
+
+        let meetingSettingsItem = NSMenuItem(
+            title: "会议模式设置…",
+            action: #selector(showMeetingSettings),
+            keyEquivalent: ""
+        )
+        meetingSettingsItem.target = self
+        menu.addItem(meetingSettingsItem)
 
         menu.addItem(NSMenuItem.separator())
         // macOS 的惯例：「检查更新」紧挨在「关于」上面
@@ -1546,8 +1561,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // 补放放到一半又被拉进会议模式：把没放完的还回队列，
             // 既不能丢，也不能等会儿重放一遍
             meetingMode.prepend(reminderCenter.presenter.cancelReplay())
+
+            // 退微信：只退正在跑的，并记下退了哪些 —— 散会后只把**这些**开回来
+            if meetingQuitsWeChat {
+                meetingMode.quitWeChatBundleIDs = meetingEffects.quitWeChats()
+            }
+            meetingEffects.applyFocus(shortcut: meetingStartShortcut)
         } else {
             floatingCharacterController.setVisible(effectiveCharacterVisible)
+
+            // 开回来，然后清掉记录：下次开会重新算
+            meetingEffects.restoreWeChats(meetingMode.quitWeChatBundleIDs)
+            meetingMode.quitWeChatBundleIDs = []
+            meetingEffects.applyFocus(shortcut: meetingEndShortcut)
         }
 
         updateStatusTitle()
@@ -1555,6 +1581,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 界面先恢复，最后再补放
         if !on { replayMissedAlerts() }
+    }
+
+    /// 「会议模式设置…」：退不退微信、切专注模式用哪两个快捷指令
+    @objc private func showMeetingSettings() {
+        let form = MeetingSettingsView(
+            quitsWeChat: meetingQuitsWeChat,
+            startShortcut: meetingStartShortcut,
+            endShortcut: meetingEndShortcut
+        )
+        let dialog = NSAlert()
+        dialog.messageText = "会议模式"
+        dialog.informativeText = "打开会议模式时做什么、关掉时做什么"
+        dialog.addButton(withTitle: "保存")
+        dialog.addButton(withTitle: "取消")
+        dialog.accessoryView = form
+        dialog.window.initialFirstResponder = form.firstResponderControl
+
+        // 和快捷键设置一样：模态框期间把热键停了，免得又切一次会议模式把自己绕进去
+        hotKeyCenter.stop()
+        defer { applyHotKeys() }
+        guard dialog.runModal() == .alertFirstButtonReturn else { return }
+
+        meetingQuitsWeChat = form.quitsWeChat
+        meetingStartShortcut = form.startShortcut
+        meetingEndShortcut = form.endShortcut
+        saveSettings()
+        rebuildMenu()
     }
 
     /// 「装没装 sink」就是呈现层的抑制开关本身（见 `AlertPresenter.recordIfSuppressed`），
@@ -1761,6 +1814,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let panelHotKey = "panelHotKey"
         static let characterHotKey = "characterHotKey"
         static let meetingHotKey = "meetingHotKey"
+        static let meetingQuitsWeChat = "meetingQuitsWeChat"
+        static let meetingStartShortcut = "meetingStartShortcut"
+        static let meetingEndShortcut = "meetingEndShortcut"
     }
 
     private func saveSettings() {
@@ -1775,6 +1831,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveHotKey(panelHotKey, forKey: SettingsKey.panelHotKey)
         saveHotKey(characterHotKey, forKey: SettingsKey.characterHotKey)
         saveHotKey(meetingHotKey, forKey: SettingsKey.meetingHotKey)
+        defaults.set(meetingQuitsWeChat, forKey: SettingsKey.meetingQuitsWeChat)
+        defaults.set(meetingStartShortcut, forKey: SettingsKey.meetingStartShortcut)
+        defaults.set(meetingEndShortcut, forKey: SettingsKey.meetingEndShortcut)
     }
 
     private func loadSettings() {
@@ -1797,6 +1856,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if defaults.object(forKey: SettingsKey.floatingCharacterVisible) != nil {
             isFloatingCharacterVisible = defaults.bool(forKey: SettingsKey.floatingCharacterVisible)
         }
+        if defaults.object(forKey: SettingsKey.meetingQuitsWeChat) != nil {
+            meetingQuitsWeChat = defaults.bool(forKey: SettingsKey.meetingQuitsWeChat)
+        }
+        meetingStartShortcut = defaults.string(forKey: SettingsKey.meetingStartShortcut) ?? ""
+        meetingEndShortcut = defaults.string(forKey: SettingsKey.meetingEndShortcut) ?? ""
         if let rawSize = defaults.object(forKey: SettingsKey.floatingCharacterSize) as? Double {
             // 老版本存过的 220 / 260 已经不在档位里了，按最接近的档位还原
             floatingCharacterSize = FloatingCharacterSizeOption.option(forPersistedValue: rawSize)
