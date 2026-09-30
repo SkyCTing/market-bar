@@ -1615,17 +1615,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
     }
 
-    /// 退出/开回微信出问题时说一句。
+    /// 会议模式的副作用出问题时说一句。
     ///
-    /// ⚠️ 文案必须**短**：这段多半出现在共享屏幕的时候，字越多越尴尬。
-    /// 细节走 NSLog，弹窗只留一行
+    /// ⚠️ 两条硬约束，都是共享屏幕场景逼出来的：
+    ///   · 文案要**短** —— 字越多，屏幕上越显眼
+    ///   · **不能出现具体 app 的名字** —— 「微信」两个字出现在别人屏幕上的
+    ///     弹窗里，本身就是信息泄露。是哪个 app 只写进 NSLog
     private func reportMeetingTrouble(title: String, bundleIDs: [String]) {
         guard !bundleIDs.isEmpty else { return }
-        let names = bundleIDs.map(MeetingSideEffects.displayName(for:)).joined(separator: "、")
-        NSLog("MarketBar: %@ —— %@", title, names)
+        NSLog("MarketBar: %@ —— %@", title, bundleIDs.joined(separator: ", "))
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "\(names) · 检查「自动化」授权"
+        alert.informativeText = "检查「自动化」授权"
         alert.addButton(withTitle: "好")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
@@ -1638,7 +1639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard let self, self.meetingMode.isOn else { return }
             self.reportMeetingTrouble(
-                title: "会议模式：微信没能退出",
+                title: "进入会议模式失败",
                 bundleIDs: self.meetingEffects.verifyQuit(bundleIDs)
             )
         }
@@ -1651,7 +1652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, !self.meetingMode.isOn else { return }
             self.reportMeetingTrouble(
-                title: "微信没能自动开回来",
+                title: "退出会议模式时出错",
                 bundleIDs: self.meetingEffects.verifyRestored(bundleIDs)
             )
         }

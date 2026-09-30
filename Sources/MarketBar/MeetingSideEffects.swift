@@ -68,11 +68,6 @@ struct MeetingSideEffects {
         bundleIDs.filter { !isRunning($0) }
     }
 
-    /// bundle id → 给人看的名字，报错时用
-    static func displayName(for bundleID: String) -> String {
-        bundleID == weChatBundleIDs.first ? "微信" : "微信小号"
-    }
-
     /// 跑快捷指令切专注模式。名字为空 = 没配，直接跳过（不算失败）
     @discardableResult
     func applyFocus(shortcut named: String) -> Bool {
