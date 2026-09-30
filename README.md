@@ -247,6 +247,11 @@ bash scripts/build-dmg.sh
 
 安装后可从菜单底部的 **「关于 MarketBar…」** 查看当前运行应用的版本号；若构建号与版本号不同，也会一并显示。
 
+菜单底部的 **「检查更新…」** 会去 GitHub 上查最新版本，有新版就弹框说明并可以直接下载 DMG；它下面还有
+**「自动检查更新」**（默认开），启动后静默查一次，同一次检查 24 小时内不会重复发请求。在弹框里选
+「稍后」会记住**那一个**版本，自动检查不再为它打扰（出了更新的版本照常提醒）；手动点「检查更新…」
+则永远会显示，不受影响。跑在 `swift run` 的未打包构建里没有版本号可比，这一项会直接说明情况、不发任何请求。
+
 ⚠️ 打包脚本会做本机 ad-hoc 签名，但未进行 Apple Developer ID 公证；从互联网下载的应用仍可能被 Gatekeeper 拦下。
 
 ## 技术实现
@@ -257,6 +262,7 @@ bash scripts/build-dmg.sh
 | 网络请求 | URLSession + async/await，多请求并发（`async let`） |
 | 行情解析 | JSONDecoder（金价/行情）+ 腾讯文本行解析（GBK 用 ISO-8859-1 无损解码） |
 | 交易日历 | timor.tech 节假日接口，每天拉一次缓存在 UserDefaults |
+| 检查更新 | GitHub Releases API（每天最多一次）；版本号逐段转 Int 比较，下载地址只放行 https + 本仓库路径 |
 | AI 聊天 | 子进程调用 `claude` CLI，`stream-json` 流式解析，复用同一会话 |
 | 微信未读 | Accessibility API 读状态项（`AXExtrasMenuBar`） |
 | 通知提醒 | 自绘 Toast + 人物气泡 + 置顶模态框 |

@@ -596,6 +596,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 右键人物弹出的 AI 聊天窗（懒创建）
     private var chatController: ClaudeChatController?
     private let aiSignController = AISignController()
+    /// 检查更新（手动点 + 每天自动一次，自动的可以在菜单里关掉）
+    private let appUpdate = AppUpdateController()
     /// 「自选与持仓」配置窗口（懒创建）
     private var watchlistSettings: WatchlistSettingsController?
     /// 「提醒管理」窗口（懒创建）
@@ -654,6 +656,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loadSettings()
         aiSignController.onChange = { [weak self] in
             self?.updateFloatingCharacter()
+            self?.rebuildMenu()
+        }
+        // 下载状态变了要把菜单标题从「检查更新…」换成「正在下载更新…」
+        appUpdate.onChange = { [weak self] in
             self?.rebuildMenu()
         }
         menu.delegate = self
@@ -736,6 +742,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         accessibilityRestartTimer?.invalidate()
         chatController?.shutdown()
         aiSignController.shutdown()
+        appUpdate.shutdown()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -801,6 +808,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusTitle()
         refreshHolidaysIfNeeded()
         refreshUnreadIfNeeded()
+        // 只起 Task 不 await：它 24 小时才真发一次请求，但绝不能占住刷新槽
+        appUpdate.checkForUpdatesIfNeeded()
         updateFloatingCharacter()
 
         // 先把这一轮的价格记进历史，再判定 —— 判定要用「N 分钟前」的点
@@ -1052,6 +1061,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         holdingsToggle.target = self
         holdingsToggle.state = snapshotIncludesHoldings ? .on : .off
         menu.addItem(holdingsToggle)
+        menu.addItem(NSMenuItem.separator())
+        // macOS 的惯例：「检查更新」紧挨在「关于」上面
+        let checkUpdateItem = NSMenuItem(
+            title: appUpdate.menuTitle,
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        checkUpdateItem.target = self
+        // 下载中不让再点，免得同时起两个下载
+        checkUpdateItem.isEnabled = !appUpdate.isDownloading
+        menu.addItem(checkUpdateItem)
+
+        // 紧挨着「检查更新」放：它是那件事的一个开关（写法同「问 AI 时带上持仓」）
+        let autoUpdateItem = NSMenuItem(
+            title: "自动检查更新",
+            action: #selector(toggleAutoUpdateCheck),
+            keyEquivalent: ""
+        )
+        autoUpdateItem.target = self
+        autoUpdateItem.state = appUpdate.autoCheckEnabled ? .on : .off
+        menu.addItem(autoUpdateItem)
+
         menu.addItem(NSMenuItem.separator())
         let aboutItem = NSMenuItem(title: "关于 MarketBar…", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
@@ -1459,6 +1490,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showAbout() {
         AboutMarketBar.show()
+    }
+
+    /// 手动检查：不管开关和 24 小时的节流，点了就查
+    @objc private func checkForUpdates() {
+        appUpdate.checkForUpdates()
+    }
+
+    @objc private func toggleAutoUpdateCheck() {
+        appUpdate.autoCheckEnabled.toggle()
+        rebuildMenu()
     }
 
     @objc
