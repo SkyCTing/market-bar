@@ -1564,15 +1564,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             // 退微信：只退正在跑的，并记下退了哪些 —— 散会后只把**这些**开回来
             if meetingQuitsWeChat {
-                meetingMode.quitWeChatBundleIDs = meetingEffects.quitWeChats()
+                let outcome = meetingEffects.quitWeChats()
+                meetingMode.quitWeChatBundleIDs = outcome.quit
+                reportMeetingTrouble(
+                    title: "没能退出微信",
+                    bundleIDs: outcome.failed,
+                    hint: "多半是「自动化」授权的问题 —— 打开「系统设置 → 隐私与安全性 → 自动化」，"
+                        + "允许 MarketBar 控制微信。**刚重装过 app 的话这条授权会失效**，需要重新允许一次。"
+                )
             }
             meetingEffects.applyFocus(shortcut: meetingStartShortcut)
         } else {
             floatingCharacterController.setVisible(effectiveCharacterVisible)
 
-            // 开回来，然后清掉记录：下次开会重新算
-            meetingEffects.restoreWeChats(meetingMode.quitWeChatBundleIDs)
+            // 先取出来再清记录，然后开回来
+            let toRestore = meetingMode.quitWeChatBundleIDs
             meetingMode.quitWeChatBundleIDs = []
+            meetingEffects.restoreWeChats(toRestore)
+            verifyWeChatRestored(toRestore)
             meetingEffects.applyFocus(shortcut: meetingEndShortcut)
         }
 
@@ -1608,6 +1617,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingEndShortcut = form.endShortcut
         saveSettings()
         rebuildMenu()
+    }
+
+    /// 退出/开回微信出问题时给一句人话。
+    ///
+    /// 这两件事以前是**完全静默**的：失败了用户只看到「微信没回来」，
+    /// 既不知道是权限问题还是别的，也不知道该去哪儿修
+    private func reportMeetingTrouble(title: String, bundleIDs: [String], hint: String) {
+        guard !bundleIDs.isEmpty else { return }
+        let names = bundleIDs.map(MeetingSideEffects.displayName(for:)).joined(separator: "、")
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "\(names)：\(hint)"
+        alert.addButton(withTitle: "知道了")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// 开回来是异步的，「派发成功」不等于「真的起来了」，隔几秒回头看一眼才算数
+    private func verifyWeChatRestored(_ bundleIDs: [String]) {
+        guard !bundleIDs.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, !self.meetingMode.isOn else { return }
+            self.reportMeetingTrouble(
+                title: "微信没能自动开回来",
+                bundleIDs: self.meetingEffects.verifyRestored(bundleIDs),
+                hint: "手动开一下吧。"
+            )
+        }
     }
 
     /// 「装没装 sink」就是呈现层的抑制开关本身（见 `AlertPresenter.recordIfSuppressed`），

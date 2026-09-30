@@ -32,7 +32,11 @@ final class MeetingSideEffectsTests: XCTestCase {
             }
             return true
         }
-        effects.launchApp = { recorder.launched.append($0) }
+        effects.launchApp = { bundleID in
+            recorder.launched.append(bundleID)
+            // 开起来就是「在跑」了，否则后面 verifyRestored 会全报缺失
+            recorder.running.insert(bundleID)
+        }
         effects.runShortcut = { name in
             recorder.shortcuts.append(name)
             return true
@@ -46,9 +50,10 @@ final class MeetingSideEffectsTests: XCTestCase {
         recorder.running = [main]
         let effects = makeEffects(recorder)
 
-        let quit = effects.quitWeChats()
+        let outcome = effects.quitWeChats()
 
-        XCTAssertEqual(quit, [main])
+        XCTAssertEqual(outcome.quit, [main])
+        XCTAssertTrue(outcome.failed.isEmpty)
         XCTAssertEqual(recorder.quit, [main], "没在跑的那个不该去退")
     }
 
@@ -56,13 +61,15 @@ final class MeetingSideEffectsTests: XCTestCase {
         let recorder = SideEffectRecorder()
         recorder.running = [main, second]
         let effects = makeEffects(recorder)
-        XCTAssertEqual(Set(effects.quitWeChats()), [main, second])
+        XCTAssertEqual(Set(effects.quitWeChats().quit), [main, second])
     }
 
     func testNothingRunningQuitsNothing() {
         let recorder = SideEffectRecorder()
         let effects = makeEffects(recorder)
-        XCTAssertTrue(effects.quitWeChats().isEmpty)
+        let outcome = effects.quitWeChats()
+        XCTAssertTrue(outcome.quit.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
         XCTAssertTrue(recorder.quit.isEmpty)
     }
 
@@ -72,15 +79,18 @@ final class MeetingSideEffectsTests: XCTestCase {
         recorder.running = [main]
         let effects = makeEffects(recorder)
 
-        // 没退成功就不该记下来 —— 否则散会后会去「开回来」一个本来就还开着的
-        XCTAssertTrue(effects.quitWeChats().isEmpty)
+        // 没退成功就不该记下来 —— 否则散会后会去「开回来」一个本来就还开着的。
+        // 但要**报出来**：以前这里完全静默，用户只能看到「微信没回来」
+        let outcome = effects.quitWeChats()
+        XCTAssertTrue(outcome.quit.isEmpty)
+        XCTAssertEqual(outcome.failed, [main], "退不掉要说出来，不能吞掉")
     }
 
     func testRestoreSkipsAppsThatCameBackOnTheirOwn() {
         let recorder = SideEffectRecorder()
         recorder.running = [main, second]
         let effects = makeEffects(recorder)
-        let quit = effects.quitWeChats()
+        let quit = effects.quitWeChats().quit
         XCTAssertEqual(Set(quit), [main, second], "前提：两个都被我们退了")
 
         // 用户在会中自己又把主微信开回来了
@@ -121,11 +131,13 @@ final class MeetingSideEffectsTests: XCTestCase {
         recorder.running = [main, second]
         let effects = makeEffects(recorder)
 
-        let quit = effects.quitWeChats()
+        let quit = effects.quitWeChats().quit
         XCTAssertEqual(Set(quit), [main, second])
 
         effects.restoreWeChats(quit)
         XCTAssertEqual(Set(recorder.launched), [main, second], "退掉的两个都该开回来")
+        XCTAssertTrue(effects.verifyRestored(quit).isEmpty, "都起来了就该报「没有遗漏」")
+        XCTAssertEqual(effects.verifyRestored([main, "+没起来+"]), ["+没起来+"], "没起来的要报出来")
     }
 
     func testQuitWeChatListSurvivesRestart() throws {

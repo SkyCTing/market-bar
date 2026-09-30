@@ -29,16 +29,26 @@ struct MeetingSideEffects {
     var launchApp: LaunchApp = MeetingSideEffects.launchInBackground
     var runShortcut: RunShortcut = MeetingSideEffects.runShortcutProcess
 
+    /// 一次退出尝试的结果：退掉的、以及**没能退掉的**
+    struct QuitOutcome: Equatable {
+        var quit: [String] = []
+        var failed: [String] = []
+    }
+
     /// 退出正在跑的微信，返回**被我们退掉的那些** bundle id。
     ///
     /// 必须记下来：散会后只把我们退掉的、且还没有自己起来的开回来。
     /// 用户自己在会议期间手动退掉的，不该被我们自作主张开回来
-    func quitWeChats() -> [String] {
-        var quit: [String] = []
+    func quitWeChats() -> QuitOutcome {
+        var outcome = QuitOutcome()
         for bundleID in Self.weChatBundleIDs where isRunning(bundleID) {
-            if quitApp(bundleID) { quit.append(bundleID) }
+            if quitApp(bundleID) {
+                outcome.quit.append(bundleID)
+            } else {
+                outcome.failed.append(bundleID)
+            }
         }
-        return quit
+        return outcome
     }
 
     /// 把之前被我们退掉的微信开回来。已经自己起来了的跳过 ——
@@ -47,6 +57,19 @@ struct MeetingSideEffects {
         for bundleID in bundleIDs where !isRunning(bundleID) {
             launchApp(bundleID)
         }
+    }
+
+    /// 开回来之后隔一会儿再确认一次。
+    ///
+    /// 「派发成功」不等于「真的起来了」—— `openApplication` 的失败是异步回调的，
+    /// 而且 app 本身也可能启动失败。所以隔几秒回头看一眼才算数
+    func verifyRestored(_ bundleIDs: [String]) -> [String] {
+        bundleIDs.filter { !isRunning($0) }
+    }
+
+    /// bundle id → 给人看的名字，报错时用
+    static func displayName(for bundleID: String) -> String {
+        bundleID == weChatBundleIDs.first ? "微信" : "微信小号"
     }
 
     /// 跑快捷指令切专注模式。名字为空 = 没配，直接跳过（不算失败）
@@ -80,13 +103,21 @@ struct MeetingSideEffects {
 
     static func launchInBackground(_ bundleID: String) {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            NSLog("MarketBar: 找不到 %@，没法开回来", bundleID)
+            NSLog("MarketBar: 找不到 %@ 的安装位置，没法开回来", bundleID)
             return
         }
         let configuration = NSWorkspace.OpenConfiguration()
         // 开会呢，别把窗口抢到前面来
         configuration.activates = false
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+            if let error {
+                NSLog("MarketBar: 开回 %@ 时报错 %@，退回普通打开方式再试", bundleID, error.localizedDescription)
+                // 退回最简单的那条路：直接按 app 路径打开
+                NSWorkspace.shared.open(url)
+            } else {
+                NSLog("MarketBar: 已请求开回 %@", bundleID)
+            }
+        }
     }
 
     /// `shortcuts run <名字>`
