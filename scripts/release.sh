@@ -95,10 +95,19 @@ NOTES="${NOTE:-MarketBar ${VERSION}}"
 if ! gh release create "${TAG}" "$DMG" --title "MarketBar ${VERSION}" --notes "$NOTES"; then
     cat >&2 <<'MSG'
 
-❌ Release 没建成。最常见的原因是 gh 的 token 缺 workflow 权限
-   （仓库历史上出现过 .github/workflows 就会要求这个）：
-       gh auth refresh -h github.com -s workflow
-   授权完手动补一次即可，tag 和提交都已经推上去了：
+❌ Release 没建成。
+
+   最常见的原因是 **gh 的活动账号不是仓库所有者**：协作者身份建 Release
+   会触发 GitHub 的 workflow 权限要求，报出来却是含糊的 404。
+   先确认账号：
+
+       gh auth status          # 看 Active account 是不是仓库所有者
+       gh auth switch -u SkyCTing
+
+   （实测：切到所有者账号后，同一个操作直接就过，不需要任何额外 scope）
+
+   修好之后手动补一次即可，tag 和提交都已经推上去了：
+
        gh release create <tag> <dmg 路径> --title "MarketBar <版本>" --notes "…"
 MSG
     exit 1
