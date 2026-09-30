@@ -80,8 +80,12 @@ DMG="dist/MarketBar-${VERSION}.dmg"
 echo "✅ 打出 $DMG"
 
 # ── 提交 + 打 tag
+# --allow-empty：版本号可能**已经是**目标值（提前手改过、或者上次打包后没发成），
+# 这时没有任何改动可提交，而 `git commit` 会以「nothing to commit」退出 ——
+# set -e 之下整个发布会停在这一步。允许空提交，保证 tag 永远指向一个
+# 写着「Release X」的提交，而不是让脚本半路死掉
 git add "$BUILD_SCRIPT"
-git commit -q -m "Release ${VERSION}" -m "${NOTE}"
+git commit -q --allow-empty -m "Release ${VERSION}" -m "${NOTE}"
 git tag -a "${TAG}" -m "MarketBar ${VERSION}"
 echo "✅ 已提交并打 tag ${TAG}"
 

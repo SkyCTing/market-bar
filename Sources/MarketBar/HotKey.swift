@@ -44,12 +44,17 @@ struct KeyCombo: Codable, Equatable, Sendable {
         return text + key.uppercased()
     }
 
-    /// 默认：行情面板 ⌥⌘M、宠物显隐 ⌥⌘P。挑的都是不容易和别的 app 撞的组合
+    /// 默认：行情面板 ⌥⌘M、宠物显隐 ⌥⌘P、会议模式 ⌥⌘K。
+    /// 挑的都是不容易和别的 app 撞的组合。
+    /// （会议模式没用 ⌥⌘H —— 那是系统的「隐藏其他」）
     static let defaultPanel = KeyCombo(
         keyCode: 46, modifiers: NSEvent.ModifierFlags([.option, .command]).rawValue, key: "m"
     )
     static let defaultCharacter = KeyCombo(
         keyCode: 35, modifiers: NSEvent.ModifierFlags([.option, .command]).rawValue, key: "p"
+    )
+    static let defaultMeeting = KeyCombo(
+        keyCode: 40, modifiers: NSEvent.ModifierFlags([.option, .command]).rawValue, key: "k"
     )
 }
 
@@ -64,9 +69,19 @@ enum HotKeyPreferences {
         }
     }
 
-    static func conflicts(panel: KeyCombo?, character: KeyCombo?) -> Bool {
-        guard let panel, let character else { return false }
-        return panel.keyCode == character.keyCode && panel.modifiers == character.modifiers
+    /// 任意两项撞了就算冲突。收数组而不是逐个具名参数 ——
+    /// 快捷键从两个变三个时，具名参数只会越加越长。
+    /// `KeyCombo` 是 Equatable 但不是 Hashable，所以两两比而不是丢进 Set
+    static func conflicts(_ combos: [KeyCombo?]) -> Bool {
+        let present = combos.compactMap { $0 }
+        for i in present.indices {
+            for j in present.index(after: i) ..< present.endIndex
+            where present[i].keyCode == present[j].keyCode
+                && present[i].modifiers == present[j].modifiers {
+                return true
+            }
+        }
+        return false
     }
 }
 

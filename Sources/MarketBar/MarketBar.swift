@@ -598,6 +598,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let aiSignController = AISignController()
     /// 检查更新（手动点 + 每天自动一次，自动的可以在菜单里关掉）
     private let appUpdate = AppUpdateController()
+    /// 会议模式：手动开关，开着的时候四个「会露出来」的地方全压住
+    private let meetingMode = MeetingMode()
     /// 「自选与持仓」配置窗口（懒创建）
     private var watchlistSettings: WatchlistSettingsController?
     /// 「提醒管理」窗口（懒创建）
@@ -642,6 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 快捷键：行情面板 / 宠物显隐。nil = 用户清掉了
     private var panelHotKey: KeyCombo? = KeyCombo.defaultPanel
     private var characterHotKey: KeyCombo? = KeyCombo.defaultCharacter
+    private var meetingHotKey: KeyCombo? = KeyCombo.defaultMeeting
     private let hotKeyCenter = HotKeyCenter()
     private var isHoverPanelPinned = false
     /// 问 AI 时把持仓（股数/成本/浮动盈亏）也放进快照。**默认关** ——
@@ -675,8 +678,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             numericPrice: currentPrice,
             isNegative: currentPriceInfo.isNegative
         )
-        floatingCharacterController.setVisible(isFloatingCharacterVisible)
+        floatingCharacterController.setVisible(effectiveCharacterVisible)
         reminderCenter.start()
+        // 带着会议模式重启时也要装上，否则提醒会照弹
+        applyMeetingSuppression()
         floatingCharacterController.onReminderClick = { [weak self] in
             self?.reminderCenter.acknowledge() ?? false
         }
@@ -694,6 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         panelHotKey = loadHotKey(forKey: SettingsKey.panelHotKey, fallback: KeyCombo.defaultPanel)
         characterHotKey = loadHotKey(forKey: SettingsKey.characterHotKey, fallback: KeyCombo.defaultCharacter)
+        meetingHotKey = loadHotKey(forKey: SettingsKey.meetingHotKey, fallback: KeyCombo.defaultMeeting)
         applyHotKeys()
         refreshHolidaysIfNeeded()
         Task {
@@ -925,9 +931,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatusTitle() {
         guard let button = statusItem.button else { return }
 
-        // 状态栏只显示价格，例如 "1049.59"
+        // 状态栏平时只显示价格，例如 "1049.59"
+        //
+        // 会议模式下不显示价格，但**必须留点东西**：statusItem 是 variableLength，
+        // 标题为空会缩到几乎点不到，人就找不回来关不掉了（热键成了唯一退路）。
+        // 用一个一眼看得出「不是价格」的占位，顺带也就知道自己还在会议模式里
         let attributed = NSAttributedString(
-            string: format(price: currentPrice),
+            string: meetingMode.isOn ? "——" : format(price: currentPrice),
             attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
@@ -937,6 +947,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.image = nil
         button.imagePosition = .noImage
         button.attributedTitle = attributed
+        button.toolTip = meetingMode.isOn ? "会议模式：提醒已静音，价格不显示" : nil
+    }
+
+    /// 人物最终该不该显示 = 用户自己的偏好 且 不在会议模式。
+    ///
+    /// ⚠️ 绝不能拿 `toggleFloatingCharacter()` 去实现会议模式：它会**翻转并落盘**
+    /// `isFloatingCharacterVisible`，等于把用户的真实偏好改掉。
+    /// `setVisible(false)` 不动 presentationMode / 面板位置 / 尺寸，
+    /// 所以恢复时能原样回到「停在哪个屏幕边缘、多大」
+    private var effectiveCharacterVisible: Bool {
+        isFloatingCharacterVisible && !meetingMode.isOn
     }
 
     private func format(price: Double) -> String {
@@ -992,7 +1013,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             keyEquivalent: ""
         )
         visibilityItem.target = self
-        visibilityItem.state = isFloatingCharacterVisible ? .on : .off
+        visibilityItem.state = effectiveCharacterVisible ? .on : .off
         floatingWindowSubmenu.addItem(visibilityItem)
 
         let hideAtEdgeItem = NSMenuItem(
@@ -1061,6 +1082,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         holdingsToggle.target = self
         holdingsToggle.state = snapshotIncludesHoldings ? .on : .off
         menu.addItem(holdingsToggle)
+        menu.addItem(NSMenuItem.separator())
+        // 自己单独一组：它同时管人物 / 提醒 / 悬停面板 / 状态栏四处，
+        // 塞进「浮动窗口」子菜单会让人以为只管人物
+        let meetingItem = NSMenuItem(
+            title: meetingMode.isOn ? "会议模式：开" : "会议模式：关",
+            action: #selector(toggleMeetingMode),
+            keyEquivalent: ""
+        )
+        meetingItem.target = self
+        meetingItem.state = meetingMode.isOn ? .on : .off
+        menu.addItem(meetingItem)
+
         menu.addItem(NSMenuItem.separator())
         // macOS 的惯例：「检查更新」紧挨在「关于」上面
         let checkUpdateItem = NSMenuItem(
@@ -1492,6 +1525,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AboutMarketBar.show()
     }
 
+    // MARK: - 会议模式
+
+    @objc private func toggleMeetingMode() {
+        setMeetingMode(!meetingMode.isOn)
+    }
+
+    private func setMeetingMode(_ on: Bool) {
+        guard on != meetingMode.isOn else { return }
+        meetingMode.setOn(on)   // 先落盘
+        applyMeetingSuppression()
+
+        if on {
+            // 照 menuWillOpen 那套收摊：正在展开的都收起来
+            isHoverPanelPinned = false
+            hoverPanel?.dismiss()
+            // setVisible(false) 会连气泡和倒计时牌一起收掉
+            floatingCharacterController.setVisible(false)
+            chatController?.close()
+            // 补放放到一半又被拉进会议模式：把没放完的还回队列，
+            // 既不能丢，也不能等会儿重放一遍
+            meetingMode.prepend(reminderCenter.presenter.cancelReplay())
+        } else {
+            floatingCharacterController.setVisible(effectiveCharacterVisible)
+        }
+
+        updateStatusTitle()
+        rebuildMenu()
+
+        // 界面先恢复，最后再补放
+        if !on { replayMissedAlerts() }
+    }
+
+    /// 「装没装 sink」就是呈现层的抑制开关本身（见 `AlertPresenter.recordIfSuppressed`），
+    /// 所以它必须和 `meetingMode.isOn` 严格同步 —— 忘了卸就等于提醒永远被吞掉
+    private func applyMeetingSuppression() {
+        reminderCenter.presenter.suppressedSink = meetingMode.isOn
+            ? { [weak self] alert in self?.meetingMode.enqueue(alert) }
+            : nil
+    }
+
+    /// 把会议期间攒下的提醒补上。
+    ///
+    /// 补放期间要把热键停掉：热键是 NSEvent 监视器，而模态框期间主队列还在跑，
+    /// 不拦的话补放中途还能再按一次（和 showHotKeySettings 的处理一致）
+    private func replayMissedAlerts() {
+        // 先取走并落盘空队列：中途崩了只会少放一次，不会重放一遍
+        let items = meetingMode.takeAll()
+        guard !items.isEmpty else { return }
+        hotKeyCenter.stop()
+        defer { applyHotKeys() }
+        reminderCenter.presenter.replay(items)
+    }
+
     /// 手动检查：不管开关和 24 小时的节流，点了就查
     @objc private func checkForUpdates() {
         appUpdate.checkForUpdates()
@@ -1509,6 +1595,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc
     private func toggleFloatingCharacter() {
+        // 会议模式中菜单里的「显示人物」显示的是「未勾选」（人物确实没显示），
+        // 这时候点一下会把它翻转并**持久化** —— 等于用户点了一个看起来是关的勾，
+        // 却把自己的真实偏好关掉了。直接不受理
+        guard !meetingMode.isOn else { return }
         isFloatingCharacterVisible.toggle()
         floatingCharacterController.setVisible(isFloatingCharacterVisible)
         // 人物都藏起来了，它的聊天窗也别留着
@@ -1670,6 +1760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let snapshotHoldings = "snapshotIncludesHoldings"
         static let panelHotKey = "panelHotKey"
         static let characterHotKey = "characterHotKey"
+        static let meetingHotKey = "meetingHotKey"
     }
 
     private func saveSettings() {
@@ -1683,6 +1774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(snapshotIncludesHoldings, forKey: SettingsKey.snapshotHoldings)
         saveHotKey(panelHotKey, forKey: SettingsKey.panelHotKey)
         saveHotKey(characterHotKey, forKey: SettingsKey.characterHotKey)
+        saveHotKey(meetingHotKey, forKey: SettingsKey.meetingHotKey)
     }
 
     private func loadSettings() {
@@ -1715,6 +1807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 快捷键呼出/收起面板。位置和鼠标悬停时用的是同一个（状态项的 frame）
     @objc private func toggleHoverPanel() {
+        guard !meetingMode.isOn else { return }
         if hoverPanel?.isVisible == true {
             isHoverPanelPinned = false
             hoverPanel?.dismiss()
@@ -1734,24 +1827,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let characterHotKey {
             bindings.append((characterHotKey, { [weak self] in self?.toggleFloatingCharacter() }))
         }
+        if let meetingHotKey {
+            bindings.append((meetingHotKey, { [weak self] in self?.toggleMeetingMode() }))
+        }
         hotKeyCenter.bind(bindings)
     }
 
     /// 「快捷键…」设置
     @objc private func showHotKeySettings() {
-        let form = HotKeySettingsView(panel: panelHotKey, character: characterHotKey)
+        let form = HotKeySettingsView(
+            panel: panelHotKey, character: characterHotKey, meeting: meetingHotKey
+        )
 
         let dialog = NSAlert()
         dialog.messageText = "快捷键"
-        let normalHint = "两项都可以留空（留空 = 不设快捷键）"
+        let normalHint = "三项都可以留空（留空 = 不设快捷键）"
         dialog.informativeText = normalHint
         dialog.addButton(withTitle: "保存")
         dialog.addButton(withTitle: "取消")
         form.onChange = { [weak dialog, weak form] in
             guard let dialog, let form else { return }
-            let conflict = HotKeyPreferences.conflicts(panel: form.panelCombo, character: form.characterCombo)
+            let conflict = HotKeyPreferences.conflicts([
+                form.panelCombo, form.characterCombo, form.meetingCombo,
+            ])
             dialog.buttons.first?.isEnabled = !conflict
-            dialog.informativeText = conflict ? "两项快捷键不能相同，请修改其中一项" : normalHint
+            dialog.informativeText = conflict ? "快捷键不能有重复，请修改其中一项" : normalHint
         }
         form.onChange?()
         dialog.accessoryView = form
@@ -1762,6 +1862,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard dialog.runModal() == .alertFirstButtonReturn else { return }
         panelHotKey = form.panelCombo
         characterHotKey = form.characterCombo
+        meetingHotKey = form.meetingCombo
         rebuildMenu()
         saveSettings()
     }
@@ -1791,7 +1892,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleMouseMove() {
-        guard !isMenuOpen,
+        guard !isMenuOpen, !meetingMode.isOn,
               let button = statusItem.button,
               let buttonWindow = button.window else { return }
 
@@ -1906,7 +2007,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 「交易日显示价格与盈亏 / 休市显示问候语」的决策收在这一处
     private func updateFloatingCharacter() {
         aiSignController.refreshIfNeeded(
-            canDisplay: isFloatingCharacterVisible && !MarketCalendar.isTradingDay(Date(), holidays: holidays)
+            canDisplay: effectiveCharacterVisible && !MarketCalendar.isTradingDay(Date(), holidays: holidays)
         )
         if let greeting = marketClosedGreeting() {
             floatingCharacterController.update(
@@ -1982,6 +2083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func showHoverPanel(below buttonRect: NSRect) {
+        guard !meetingMode.isOn else { return }
         hoverPanel?.dismiss()
 
         let panel = HoverPanel()

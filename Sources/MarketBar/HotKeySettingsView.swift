@@ -82,15 +82,18 @@ final class KeyComboRecorderView: NSView {
 final class HotKeySettingsView: NSView {
     private let panelRecorder = KeyComboRecorderView()
     private let characterRecorder = KeyComboRecorderView()
+    private let meetingRecorder = KeyComboRecorderView()
     var onChange: (() -> Void)?
 
-    init(panel: KeyCombo?, character: KeyCombo?) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 122))
+    init(panel: KeyCombo?, character: KeyCombo?, meeting: KeyCombo?) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 158))
         panelRecorder.combo = panel
         characterRecorder.combo = character
+        meetingRecorder.combo = meeting
         buildLayout()
-        panelRecorder.onChange = { [weak self] in self?.onChange?() }
-        characterRecorder.onChange = { [weak self] in self?.onChange?() }
+        for recorder in [panelRecorder, characterRecorder, meetingRecorder] {
+            recorder.onChange = { [weak self] in self?.onChange?() }
+        }
     }
 
     @available(*, unavailable)
@@ -106,21 +109,20 @@ final class HotKeySettingsView: NSView {
             addSubview(field)
         }
 
-        rowLabel("行情面板", y: 84)
-        panelRecorder.frame = NSRect(x: 84, y: 80, width: 120, height: 26)
-        addSubview(panelRecorder)
-        let panelClear = NSButton(title: "清除", target: self, action: #selector(clearPanel))
-        panelClear.frame = NSRect(x: 212, y: 80, width: 64, height: 26)
-        panelClear.bezelStyle = .rounded
-        addSubview(panelClear)
+        func addRow(_ label: String, y: CGFloat, recorder: KeyComboRecorderView, clear: Selector) {
+            rowLabel(label, y: y)
+            recorder.frame = NSRect(x: 84, y: y - 4, width: 120, height: 26)
+            addSubview(recorder)
+            let button = NSButton(title: "清除", target: self, action: clear)
+            button.frame = NSRect(x: 212, y: y - 4, width: 64, height: 26)
+            button.bezelStyle = .rounded
+            addSubview(button)
+        }
 
-        rowLabel("宠物显隐", y: 46)
-        characterRecorder.frame = NSRect(x: 84, y: 42, width: 120, height: 26)
-        addSubview(characterRecorder)
-        let characterClear = NSButton(title: "清除", target: self, action: #selector(clearCharacter))
-        characterClear.frame = NSRect(x: 212, y: 42, width: 64, height: 26)
-        characterClear.bezelStyle = .rounded
-        addSubview(characterClear)
+        // 从上往下排：每行 38pt
+        addRow("行情面板", y: 120, recorder: panelRecorder, clear: #selector(clearPanel))
+        addRow("宠物显隐", y: 82, recorder: characterRecorder, clear: #selector(clearCharacter))
+        addRow("会议模式", y: 44, recorder: meetingRecorder, clear: #selector(clearMeeting))
 
         let hint = NSTextField(wrappingLabelWithString:
             "点方框，然后按下你要的组合键。至少带一个 ⌘⌥⌃⇧ —— 不带修饰键会把正常打字劫走。")
@@ -132,7 +134,9 @@ final class HotKeySettingsView: NSView {
 
     @objc private func clearPanel() { panelRecorder.combo = nil }
     @objc private func clearCharacter() { characterRecorder.combo = nil }
+    @objc private func clearMeeting() { meetingRecorder.combo = nil }
 
     var panelCombo: KeyCombo? { panelRecorder.combo }
     var characterCombo: KeyCombo? { characterRecorder.combo }
+    var meetingCombo: KeyCombo? { meetingRecorder.combo }
 }

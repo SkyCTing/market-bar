@@ -74,12 +74,19 @@ final class KeyComboTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(KeyCombo?.self, from: cleared))
     }
 
-    /// 两个默认值互不冲突，否则装上去就有一个永远不生效
+    /// 三个默认值互不冲突，否则装上去就有一个永远不生效
     func testDefaultCombosDoNotCollide() {
         XCTAssertNotEqual(KeyCombo.defaultPanel, KeyCombo.defaultCharacter)
+        XCTAssertNotEqual(KeyCombo.defaultPanel, KeyCombo.defaultMeeting)
+        XCTAssertNotEqual(KeyCombo.defaultCharacter, KeyCombo.defaultMeeting)
         XCTAssertFalse(KeyCombo.defaultPanel.matches(
             event(keyCode: KeyCombo.defaultCharacter.keyCode, flags: [.option, .command])
         ))
+        // 会议模式那个也别撞上系统的「隐藏其他」（⌥⌘H）
+        XCTAssertNotEqual(KeyCombo.defaultMeeting.key, "h")
+        XCTAssertFalse(HotKeyPreferences.conflicts([
+            .defaultPanel, .defaultCharacter, .defaultMeeting,
+        ]))
     }
 
     func testClearingShortcutStaysClearedAfterReload() throws {
@@ -92,24 +99,31 @@ final class KeyComboTests: XCTestCase {
         XCTAssertNil(HotKeyPreferences.load(from: defaults, key: "panel", fallback: .defaultPanel))
     }
 
-    func testTwoActionsCannotUseSameKeysEvenWithDifferentDisplayCase() {
+    func testActionsCannotUseSameKeysEvenWithDifferentDisplayCase() {
         let panel = KeyCombo.defaultPanel
         let duplicate = KeyCombo(keyCode: panel.keyCode, modifiers: panel.modifiers, key: "M")
-        XCTAssertTrue(HotKeyPreferences.conflicts(panel: panel, character: duplicate))
-        XCTAssertFalse(HotKeyPreferences.conflicts(panel: panel, character: .defaultCharacter))
-        XCTAssertFalse(HotKeyPreferences.conflicts(panel: nil, character: panel))
+        XCTAssertTrue(HotKeyPreferences.conflicts([panel, duplicate]))
+        XCTAssertFalse(HotKeyPreferences.conflicts([panel, .defaultCharacter]))
+        // 没设的那几项不参与比较
+        XCTAssertFalse(HotKeyPreferences.conflicts([nil, panel]))
+        // 三个里任意两个撞了都要查出来，不只是前两个
+        XCTAssertTrue(HotKeyPreferences.conflicts([.defaultPanel, .defaultCharacter, duplicate]))
+        XCTAssertFalse(HotKeyPreferences.conflicts([.defaultPanel, .defaultCharacter, .defaultMeeting]))
     }
 
     @MainActor
-    func testSettingsNotifiesWhenEitherShortcutIsCleared() {
-        let form = HotKeySettingsView(panel: .defaultPanel, character: .defaultCharacter)
+    func testSettingsNotifiesWhenAnyShortcutIsCleared() {
+        let form = HotKeySettingsView(
+            panel: .defaultPanel, character: .defaultCharacter, meeting: .defaultMeeting
+        )
         var changes = 0
         form.onChange = { changes += 1 }
         let clearButtons = form.subviews.compactMap { $0 as? NSButton }.filter { $0.title == "清除" }
-        XCTAssertEqual(clearButtons.count, 2)
+        XCTAssertEqual(clearButtons.count, 3)
         for button in clearButtons { button.performClick(nil) }
-        XCTAssertEqual(changes, 2)
+        XCTAssertEqual(changes, 3)
         XCTAssertNil(form.panelCombo)
         XCTAssertNil(form.characterCombo)
+        XCTAssertNil(form.meetingCombo)
     }
 }
