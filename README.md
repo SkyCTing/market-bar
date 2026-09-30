@@ -140,9 +140,18 @@ macOS 菜单栏行情与持仓监控：黄金积存金实时价格 + 自选股�
 > 专注模式为什么只能借道快捷指令：macOS **没有**任何公开 API 能设置它 ——
 > `INFocusStatus.isFocused` 是 `readonly`，没有 DoNotDisturb framework，
 > 老的 `defaults write com.apple.notificationcenterui doNotDisturb` 在 Big Sur 之后已经失效。
-> 用法：在「快捷指令」里建两个快捷指令，操作选**「设定专注模式」**，一个开启、一个关闭，
-> 把名字填进「会议模式设置…」。第一次跑可能弹一次控制「快捷指令」的自动化授权。
-> 留空 = 不动你的专注模式。
+> **用法**：仓库里已经带了两个现成的快捷指令文件，在 `FocusShortcuts/` 目录：
+>
+> - `Meeting Start.shortcut` —— 开「勿扰模式」
+> - `Meeting End.shortcut` —— 关「勿扰模式」
+>
+> **双击 →「添加快捷指令」**，然后把这两个名字填进「会议模式设置…」即可。
+> 第一次跑可能弹一次控制「快捷指令」的自动化授权。留空 = 不动你的专注模式。
+> 想换成别的专注模式（如「工作」「睡眠」）就自己在 Shortcuts 里建，填它的名字。
+>
+> 这两个文件由 `scripts/make-focus-shortcuts.sh` 生成（可重跑），内容是：
+> 动作 `is.workflow.actions.dnd.set`，`Enabled` 分别为 1 / 0，
+> 专注模式 `com.apple.donotdisturb.mode.default`。改参数直接改脚本。
 
 会议模式**会跨重启保留**：开会中途重启 app 也不会突然冒出来，被退掉的微信也还记得要开回来。
 散会记得关掉，否则提醒一直是静默的。
@@ -220,7 +229,6 @@ macOS 菜单栏行情与持仓监控：黄金积存金实时价格 + 自选股�
 market-bar/
 ├── Package.swift                              # Swift Package 工程定义
 ├── AppIcon.icns                               # 应用图标
-├── Sources/MarketBar/
 │   ├── MarketBar.swift                        # 入口、AppDelegate、状态栏菜单、悬浮面板
 │   ├── WatchlistConfig.swift                  # 自选清单与持仓的配置文件读写
 │   ├── WatchlistDraft.swift                   # 配置页面的表格模型：换算、代码补全、校验（纯逻辑）
@@ -245,11 +253,20 @@ market-bar/
 │   ├── ClaudeChatController.swift             # 聊天窗 + 会话状态 + 在途请求
 │   ├── ClaudeChatHistory.swift                # 读取 CLI 会话文件里的历史
 │   ├── ChatTranscriptStore.swift              # 历史兜底：app 自己存一份
+│   ├── MeetingMode.swift                      # 会议模式的状态与「会中压住的提醒」队列（纯逻辑）
+│   ├── MeetingSideEffects.swift               # 会议模式的外部副作用：退微信、切专注模式
+│   ├── MeetingSettingsView.swift              # 「会议模式设置…」表单
+│   ├── AppUpdate.swift                        # 检查更新：版本比较、GitHub 响应、地址校验（纯逻辑）
+│   ├── AppUpdateController.swift              # 检查更新的状态机与弹框
 │   └── Resources/FloatingCharacter/           # 人物姿态图片
 ├── Artwork/                                   # 浮动人物高清源素材与绿幕源图
 ├── Tests/MarketBarTests/                      # 单元测试（XCTest）
 ├── docs/reminders-plan.md                     # 提醒功能的设计说明
+├── FocusShortcuts/                            # 会议模式用的两个快捷指令文件（双击导入）
 ├── scripts/build-dmg.sh                       # DMG 打包脚本
+├── scripts/release.sh                         # 一条命令发一个版本
+├── scripts/make-icon.swift                    # 生成 AppIcon.icns
+├── scripts/make-focus-shortcuts.sh            # 生成 FocusShortcuts/ 里的两个快捷指令
 └── dist/                                      # 打包产出目录
 ```
 
