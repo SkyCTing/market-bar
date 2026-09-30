@@ -1564,14 +1564,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             // 退微信：只退正在跑的，并记下退了哪些 —— 散会后只把**这些**开回来
             if meetingQuitsWeChat {
-                let outcome = meetingEffects.quitWeChats()
-                meetingMode.quitWeChatBundleIDs = outcome.quit
-                reportMeetingTrouble(
-                    title: "没能退出微信",
-                    bundleIDs: outcome.failed,
-                    hint: "多半是「自动化」授权的问题 —— 打开「系统设置 → 隐私与安全性 → 自动化」，"
-                        + "允许 MarketBar 控制微信。**刚重装过 app 的话这条授权会失效**，需要重新允许一次。"
-                )
+                // 记「尝试过的」而不是「脚本说成功的」—— 见 quitWeChats 的注释
+                let attempted = meetingEffects.quitWeChats()
+                meetingMode.quitWeChatBundleIDs = attempted
+                verifyWeChatQuit(attempted)
             }
             meetingEffects.applyFocus(shortcut: meetingStartShortcut)
         } else {
@@ -1619,22 +1615,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
     }
 
-    /// 退出/开回微信出问题时给一句人话。
+    /// 退出/开回微信出问题时说一句。
     ///
-    /// 这两件事以前是**完全静默**的：失败了用户只看到「微信没回来」，
-    /// 既不知道是权限问题还是别的，也不知道该去哪儿修
-    private func reportMeetingTrouble(title: String, bundleIDs: [String], hint: String) {
+    /// ⚠️ 文案必须**短**：这段多半出现在共享屏幕的时候，字越多越尴尬。
+    /// 细节走 NSLog，弹窗只留一行
+    private func reportMeetingTrouble(title: String, bundleIDs: [String]) {
         guard !bundleIDs.isEmpty else { return }
         let names = bundleIDs.map(MeetingSideEffects.displayName(for:)).joined(separator: "、")
+        NSLog("MarketBar: %@ —— %@", title, names)
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "\(names)：\(hint)"
-        alert.addButton(withTitle: "知道了")
+        alert.informativeText = "\(names) · 检查「自动化」授权"
+        alert.addButton(withTitle: "好")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
 
-    /// 开回来是异步的，「派发成功」不等于「真的起来了」，隔几秒回头看一眼才算数
+    /// 退出是异步的：发完 quit 要等它真的没了才算数（AppleScript 的返回值不可信）
+    private func verifyWeChatQuit(_ bundleIDs: [String]) {
+        guard !bundleIDs.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, self.meetingMode.isOn else { return }
+            self.reportMeetingTrouble(
+                title: "会议模式：微信没能退出",
+                bundleIDs: self.meetingEffects.verifyQuit(bundleIDs)
+            )
+        }
+    }
+
+    /// 开回来同样是异步的，「派发成功」不等于「真的起来了」
     private func verifyWeChatRestored(_ bundleIDs: [String]) {
         guard !bundleIDs.isEmpty else { return }
         Task { @MainActor [weak self] in
@@ -1642,8 +1652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, !self.meetingMode.isOn else { return }
             self.reportMeetingTrouble(
                 title: "微信没能自动开回来",
-                bundleIDs: self.meetingEffects.verifyRestored(bundleIDs),
-                hint: "手动开一下吧。"
+                bundleIDs: self.meetingEffects.verifyRestored(bundleIDs)
             )
         }
     }

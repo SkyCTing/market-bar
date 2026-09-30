@@ -29,26 +29,27 @@ struct MeetingSideEffects {
     var launchApp: LaunchApp = MeetingSideEffects.launchInBackground
     var runShortcut: RunShortcut = MeetingSideEffects.runShortcutProcess
 
-    /// 一次退出尝试的结果：退掉的、以及**没能退掉的**
-    struct QuitOutcome: Equatable {
-        var quit: [String] = []
-        var failed: [String] = []
+    /// 试着退出正在跑的微信，返回**尝试过的**那些 bundle id。
+    ///
+    /// 必须记下来：散会后只把我们动过的、且还没有自己起来的开回来。
+    /// 用户自己在会议期间手动退掉的，不该被我们自作主张开回来。
+    ///
+    /// ⚠️ **不看 `quitApp` 的返回值**。微信退得极快，Apple Event 的回执还没回来
+    /// 它就没了，AppleScript 于是报一个「连接失效」之类的错 —— 但那其实是**退出成功**。
+    /// 之前按返回值判断，结果微信明明退了还弹「没能退出」的框。
+    /// 真正算不算成功，隔一会儿看它还在不在（`verifyQuit`）才算数
+    func quitWeChats() -> [String] {
+        var attempted: [String] = []
+        for bundleID in Self.weChatBundleIDs where isRunning(bundleID) {
+            _ = quitApp(bundleID)
+            attempted.append(bundleID)
+        }
+        return attempted
     }
 
-    /// 退出正在跑的微信，返回**被我们退掉的那些** bundle id。
-    ///
-    /// 必须记下来：散会后只把我们退掉的、且还没有自己起来的开回来。
-    /// 用户自己在会议期间手动退掉的，不该被我们自作主张开回来
-    func quitWeChats() -> QuitOutcome {
-        var outcome = QuitOutcome()
-        for bundleID in Self.weChatBundleIDs where isRunning(bundleID) {
-            if quitApp(bundleID) {
-                outcome.quit.append(bundleID)
-            } else {
-                outcome.failed.append(bundleID)
-            }
-        }
-        return outcome
+    /// 隔一会儿回头确认：**还在跑的**才是真没退掉
+    func verifyQuit(_ bundleIDs: [String]) -> [String] {
+        bundleIDs.filter { isRunning($0) }
     }
 
     /// 把之前被我们退掉的微信开回来。已经自己起来了的跳过 ——
@@ -88,17 +89,20 @@ struct MeetingSideEffects {
     }
 
     /// 用 AppleScript 的 `quit`（优雅退出，微信会正常保存），不用 `forceTerminate`
-    /// —— 那是 SIGKILL，正在输入的草稿会没。走的是已经授权过的自动化通路
+    /// —— 那是 SIGKILL，正在输入的草稿会没。走的是已经授权过的自动化通路。
+    ///
+    /// 返回的 Bool **只表示「这条 Apple Event 发出去时没报错」**，不代表真退掉了：
+    /// app 退得快时回执收不到，脚本照样报错。判成败请用 `verifyQuit`
     static func quitViaAppleScript(_ bundleID: String) -> Bool {
         let source = "tell application id \"\(bundleID)\" to quit"
         guard let script = NSAppleScript(source: source) else { return false }
         var error: NSDictionary?
         script.executeAndReturnError(&error)
-        guard error == nil else {
-            NSLog("MarketBar: 退出 %@ 失败 %@", bundleID, String(describing: error))
-            return false
+        if let error {
+            // 这个错多半是「app 已经没了」造成的回执丢失，不是真失败，只记不报
+            NSLog("MarketBar: 发 quit 给 %@ 时报了 %@（不代表没退掉）", bundleID, String(describing: error))
         }
-        return true
+        return error == nil
     }
 
     static func launchInBackground(_ bundleID: String) {
