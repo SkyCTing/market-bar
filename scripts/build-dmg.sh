@@ -100,29 +100,34 @@ codesign --force --deep --sign - "${APP_BUNDLE}"
 # Create DMG
 echo "💿 Creating DMG..."
 
-DMG_TEMP="${DIST_DIR}/dmg-staging"
 DMG_PATH="${DIST_DIR}/${DMG_NAME}.dmg"
 
-if [ -d "${DMG_TEMP}" ]; then
-    rm -r "${DMG_TEMP}"
+# 用 create-dmg 而不是裸 hdiutil：它能把窗口大小、图标位置、Applications 拖拽目标
+# 都写进 DMG 里的 .DS_Store —— 那才是「打开就是一张拖拽示意图」的来源。
+# 裸 hdiutil 只会给出一个默认排列的文件夹，能用但不好看。
+if ! command -v create-dmg >/dev/null 2>&1; then
+    echo "❌ 没装 create-dmg。装一下：brew install create-dmg"
+    exit 1
 fi
-mkdir -p "${DMG_TEMP}"
 
-# Copy app to staging
-cp -R "${APP_BUNDLE}" "${DMG_TEMP}/"
+# create-dmg 不肯覆盖已存在的文件
+rm -f "${DMG_PATH}"
 
-# Create symlink to Applications folder
-ln -s /Applications "${DMG_TEMP}/Applications"
+# 160×320 的图标、窗口 600×420：左边放 App，右边放 Applications，
+# 留出中间那段给用户一眼看出「把左边拖到右边」
+create-dmg \
+    --volname "${APP_NAME}" \
+    --window-pos 200 120 \
+    --window-size 600 420 \
+    --icon-size 128 \
+    --icon "${APP_NAME}.app" 150 210 \
+    --hide-extension "${APP_NAME}.app" \
+    --app-drop-link 450 210 \
+    --no-internet-enable \
+    "${DMG_PATH}" \
+    "${APP_BUNDLE}" 2>&1
 
-# Create DMG
-hdiutil create \
-    -volname "${APP_NAME}" \
-    -srcfolder "${DMG_TEMP}" \
-    -ov \
-    -format UDZO \
-    "${DMG_PATH}" 2>&1
-
-rm -r "${DMG_TEMP}"
+[ -f "${DMG_PATH}" ] || { echo "❌ DMG 没生成"; exit 1; }
 
 echo ""
 echo "🎉 Done! DMG created at:"
