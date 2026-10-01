@@ -652,6 +652,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var meetingEndShortcut = ""
     /// 会议模式的外部副作用（退微信、切专注），可注入便于测试
     private let meetingEffects = MeetingSideEffects()
+    /// 开机自启动
+    private let launchAtLogin = LaunchAtLogin()
     private let hotKeyCenter = HotKeyCenter()
     private var isHoverPanelPinned = false
     /// 问 AI 时把持仓（股数/成本/浮动盈亏）也放进快照。**默认关** ——
@@ -689,6 +691,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reminderCenter.start()
         // 带着会议模式重启时也要装上，否则提醒会照弹
         applyMeetingSuppression()
+        askLaunchAtLoginIfNeeded()
         floatingCharacterController.onReminderClick = { [weak self] in
             self?.reminderCenter.acknowledge() ?? false
         }
@@ -1131,6 +1134,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoUpdateItem.state = appUpdate.autoCheckEnabled ? .on : .off
         menu.addItem(autoUpdateItem)
 
+        let launchAtLoginItem = NSMenuItem(
+            title: "开机自动启动",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        launchAtLoginItem.target = self
+        launchAtLoginItem.state = launchAtLogin.isOn ? .on : .off
+        menu.addItem(launchAtLoginItem)
+
         menu.addItem(NSMenuItem.separator())
         let aboutItem = NSMenuItem(title: "关于 MarketBar…", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
@@ -1540,6 +1552,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AboutMarketBar.show()
     }
 
+    // MARK: - 开机自启动
+
+    @objc private func toggleLaunchAtLogin() {
+        let enabling = !launchAtLogin.isOn
+        if let message = launchAtLogin.setEnabled(enabling) {
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "好")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+        rebuildMenu()
+    }
+
+    /// 首次启动问一次要不要开机自启。
+    ///
+    /// 延迟几秒再问：先把状态栏、菜单、行情都立起来，别让一个弹窗挡在启动路径上。
+    /// 问过就记下（无论选了什么），不再重复打扰
+    private func askLaunchAtLoginIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard LaunchAtLogin.shouldAskFirstTime(
+            asked: defaults.bool(forKey: SettingsKey.askedLaunchAtLogin),
+            state: LaunchAtLogin.systemState()
+        ) else { return }
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, self.chatController?.isVisible != true else { return }
+            defaults.set(true, forKey: SettingsKey.askedLaunchAtLogin)
+
+            let alert = NSAlert()
+            alert.messageText = "开机时自动启动 MarketBar？"
+            alert.informativeText = "这样重启电脑后它会自己回来。之后可以在菜单里改。"
+            alert.addButton(withTitle: "开机自启")
+            alert.addButton(withTitle: "不用了")
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+            if let message = self.launchAtLogin.setEnabled(true) {
+                let failure = NSAlert()
+                failure.messageText = message
+                failure.addButton(withTitle: "好")
+                failure.runModal()
+            }
+            self.rebuildMenu()
+        }
+    }
+
     // MARK: - 会议模式
 
     @objc private func toggleMeetingMode() {
@@ -1865,6 +1925,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         static let meetingQuitsWeChat = "meetingQuitsWeChat"
         static let meetingStartShortcut = "meetingStartShortcut"
         static let meetingEndShortcut = "meetingEndShortcut"
+        static let askedLaunchAtLogin = "askedLaunchAtLogin"
     }
 
     private func saveSettings() {
