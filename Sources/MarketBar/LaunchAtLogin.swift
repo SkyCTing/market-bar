@@ -69,10 +69,17 @@ struct LaunchAtLogin {
 
     /// 首次启动要不要问一句。
     ///
-    /// 只在「还没问过」且「本来就没开」时问 —— 已经开了的不用问，
-    /// 系统里找不到这个 app 的（比如从临时目录跑）问了也没用
+    /// ⚠️ **实测**：从没注册过的 app，`SMAppService.mainApp.status` 报的是
+    /// **`.notFound`**，不是 `.notRegistered` —— 后者只在「注册过又注销」之后出现。
+    /// 只认 `.notRegistered` 的话，全新安装的用户**第一次永远不会被问到**
+    /// （这个坑踩过：造了个最小 app bundle 实测出来的）。
+    /// 所以两个都当成「没开」。
+    ///
+    /// 已经开着的不用问；`.requiresApproval` 说明用户在系统设置里还有一步没做，
+    /// 再弹一次只会烦人；`.unavailable` 是压根不是 bundle（`swift run`）。
     static func shouldAskFirstTime(asked: Bool, state: State) -> Bool {
-        !asked && state == .notRegistered
+        guard !asked else { return false }
+        return state == .notRegistered || state == .notFound
     }
 
     static func systemState() -> State {

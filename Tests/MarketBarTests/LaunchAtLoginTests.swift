@@ -89,17 +89,21 @@ final class LaunchAtLoginTests: XCTestCase {
         XCTAssertNotNil(login.setEnabled(true), "失败要说一声，不能吞")
     }
 
-    func testFirstTimePromptOnlyWhenNeverAskedAndNotRegistered() {
-        // 该问：没问过 + 本来就没开
+    func testFirstTimePromptForBothNeverRegisteredStates() {
+        // ⚠️ 这条钉的是实测出来的坑：全新安装的 app 报的是 **notFound**，
+        // 不是 notRegistered（后者只在注销后出现）。只认 notRegistered 的话
+        // 第一次永远不会问 —— 这正是「启动时没提醒」的原因
+        XCTAssertTrue(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .notFound))
         XCTAssertTrue(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .notRegistered))
+
         // 问过了就不再烦
+        XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: true, state: .notFound))
         XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: true, state: .notRegistered))
         // 已经开着的不用问
         XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .enabled))
-        // 系统里找不到这个 app（临时目录跑）问了也白问
-        XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .notFound))
-        XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .unavailable))
-        // 等用户去批准的那种也别再问一遍
+        // 等用户去系统设置批准的那种，再弹一次只会烦人
         XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .requiresApproval))
+        // 压根不是 bundle（swift run）问了也白问
+        XCTAssertFalse(LaunchAtLogin.shouldAskFirstTime(asked: false, state: .unavailable))
     }
 }

@@ -1572,6 +1572,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 问过就记下（无论选了什么），不再重复打扰
     private func askLaunchAtLoginIfNeeded() {
         let defaults = UserDefaults.standard
+        // 记一行：这个状态不透明，出了事只能靠它查（这次排查就是因为没有它）
+        NSLog("MarketBar: 开机自启动 state=%@ asked=%@",
+              String(describing: LaunchAtLogin.systemState()),
+              defaults.bool(forKey: SettingsKey.askedLaunchAtLogin) ? "yes" : "no")
         guard LaunchAtLogin.shouldAskFirstTime(
             asked: defaults.bool(forKey: SettingsKey.askedLaunchAtLogin),
             state: LaunchAtLogin.systemState()
