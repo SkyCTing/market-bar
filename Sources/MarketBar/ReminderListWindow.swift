@@ -148,28 +148,43 @@ final class ReminderListView: NSView, NSTableViewDataSource, NSTableViewDelegate
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let identifier = tableColumn?.identifier.rawValue, entries.indices.contains(row) else { return nil }
 
-        let field = NSTextField(labelWithString: text(for: identifier, entry: entries[row]))
+        let entry = entries[row]
+        // 「还会不会响」直接复用调度器的 nextFireDate，不另写一套判断
+        var note: String?
+        if case .reminder(let reminder) = entry {
+            note = ReminderScheduler.liveness(of: reminder).note
+        }
+
+        let field = NSTextField(labelWithString: text(for: identifier, entry: entry, note: note))
         field.font = .systemFont(ofSize: 12)
         field.lineBreakMode = .byTruncatingTail
-        field.textColor = identifier == "kind" ? .secondaryLabelColor : .labelColor
+        switch identifier {
+        case "kind":
+            field.textColor = .secondaryLabelColor
+        default:
+            // 不会再响的整行压暗：光靠规则列那句提示，窗口一窄就被截掉了
+            field.textColor = note == nil ? .labelColor : .tertiaryLabelColor
+        }
         return field
     }
 
-    private func text(for identifier: String, entry: ReminderListEntry) -> String {
+    private func text(for identifier: String, entry: ReminderListEntry, note: String?) -> String {
         switch entry {
         case .reminder(let reminder):
             switch identifier {
             case "kind": return reminder.kind == .countdown ? "倒计时" : "定时"
             case "content": return reminder.body
             case "rule":
+                let base: String
                 if reminder.kind == .countdown {
-                    return "\(CountdownFormat.duration(reminder.countdownSeconds))·\(reminder.repeatsCountdown ? "循环" : "一次")"
+                    base = "\(CountdownFormat.duration(reminder.countdownSeconds))·\(reminder.repeatsCountdown ? "循环" : "一次")"
+                } else if case .once = reminder.repeatRule, !reminder.anchorDay.isEmpty {
+                    // 「只一次」要把日期说出来，不然只看到「只一次」不知道是哪天
+                    base = "\(reminder.anchorDay) \(reminder.timeText)"
+                } else {
+                    base = "\(reminder.timeText) \(reminder.repeatRule.title)"
                 }
-                // 「只一次」要把日期说出来，不然只看到「只一次」不知道是哪天
-                if case .once = reminder.repeatRule, !reminder.anchorDay.isEmpty {
-                    return "\(reminder.anchorDay) \(reminder.timeText)"
-                }
-                return "\(reminder.timeText) \(reminder.repeatRule.title)"
+                return note.map { "\(base) · \($0)" } ?? base
             case "methods": return reminder.methods.title
             default: return ""
             }

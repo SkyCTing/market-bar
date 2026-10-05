@@ -316,6 +316,59 @@ enum ReminderScheduler {
     }
 
     /// 下一次触发时间（菜单里显示用）
+    /// 一条提醒还会不会响。管理列表要把它显示出来 ——
+    /// 否则「已经跑完的倒计时」「没设日期的一次性提醒」和正常提醒在列表里长得一模一样，
+    /// 用户只会觉得「这条怎么不响了」却查不出原因
+    enum Liveness: Equatable {
+        case live
+        /// 不循环的倒计时已经跑完（跑完会把 `countdownStartedAt` 清掉）
+        case finishedCountdown
+        /// 循环倒计时还没启动过
+        case idleCountdown
+        /// 一次性提醒，但没设日期 —— 排不出下一次
+        case missingDate
+        /// 一次性提醒，日期已经过去了
+        case expiredOnce
+
+        /// 列表里跟在规则后面的提示；nil = 正常，什么都不显示
+        var note: String? {
+            switch self {
+            case .live: return nil
+            case .finishedCountdown: return "已结束"
+            case .idleCountdown: return "未启动"
+            case .missingDate: return "没设日期"
+            case .expiredOnce: return "已过期"
+            }
+        }
+    }
+
+    /// 判定「还会不会响」。
+    ///
+    /// **复用 `nextFireDate`**，不另写一套逻辑 —— 两套判断迟早会和真实调度对不上，
+    /// 那时候列表就成了骗人的。
+    ///
+    /// 只有**确定**的几种才判为死条。其余情况（比如勾了「跳过节假日」、又正好整个
+    /// 搜索窗口都是假期）只是暂时排不到，说它失效就是误报，所以一律当正常。
+    static func liveness(
+        of reminder: Reminder,
+        now: Date = Date(),
+        holidays: [String: String] = [:],
+        makeupWorkdays: Set<String> = []
+    ) -> Liveness {
+        let next = ReminderScheduler.nextFireDate(
+            after: now, reminder: reminder, holidays: holidays, makeupWorkdays: makeupWorkdays
+        )
+        guard next == nil else { return .live }
+
+        switch reminder.kind {
+        case .countdown:
+            return reminder.repeatsCountdown ? .idleCountdown : .finishedCountdown
+        case .scheduled:
+            guard case .once = reminder.repeatRule else { return .live }
+            return reminder.anchorDay.isEmpty ? .missingDate : .expiredOnce
+        }
+    }
+
     static func nextFireDate(
         after date: Date,
         reminder: Reminder,

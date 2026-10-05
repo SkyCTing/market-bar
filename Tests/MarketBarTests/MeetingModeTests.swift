@@ -375,3 +375,65 @@ final class AlertPresenterMeetingTests: XCTestCase {
         XCTAssertFalse(AlertPresenter.canPresent(.bubble, characterVisible: false))
     }
 }
+
+// MARK: - 提醒「还会不会响」
+
+final class ReminderLivenessTests: XCTestCase {
+    private let calendar = TradingSession.calendar
+    private let now = Date(timeIntervalSince1970: 1_760_000_000)   // 固定时刻，不受跑测试的日子影响
+
+    private func scheduled(hour: Int, minute: Int, rule: Reminder.Repeat, anchorDay: String = "") -> Reminder {
+        var reminder = Reminder(title: "t", body: "b", hour: hour, minute: minute, repeatRule: rule)
+        reminder.anchorDay = anchorDay
+        return reminder
+    }
+
+    private func countdown(startedAt: Date?, seconds: Int, repeats: Bool) -> Reminder {
+        var reminder = Reminder(title: "t", body: "b", hour: 0, minute: 0)
+        reminder.kind = .countdown
+        reminder.countdownSeconds = seconds
+        reminder.countdownStartedAt = startedAt
+        reminder.repeatsCountdown = repeats
+        return reminder
+    }
+
+    func testNormalRemindersAreLive() {
+        XCTAssertEqual(ReminderScheduler.liveness(of: scheduled(hour: 9, minute: 0, rule: .daily), now: now), .live)
+        XCTAssertEqual(ReminderScheduler.liveness(of: countdown(startedAt: now, seconds: 300, repeats: false), now: now), .live)
+    }
+
+    func testFinishedNonRepeatingCountdownIsReported() {
+        // 跑完会把 countdownStartedAt 清掉 —— 用户看到的就是「这条怎么不响了」
+        XCTAssertEqual(ReminderScheduler.liveness(of: countdown(startedAt: nil, seconds: 300, repeats: false), now: now),
+                       .finishedCountdown)
+        XCTAssertEqual(ReminderScheduler.Liveness.finishedCountdown.note, "已结束")
+    }
+
+    func testNeverStartedRepeatingCountdownIsReported() {
+        XCTAssertEqual(ReminderScheduler.liveness(of: countdown(startedAt: nil, seconds: 300, repeats: true), now: now),
+                       .idleCountdown)
+        XCTAssertEqual(ReminderScheduler.Liveness.idleCountdown.note, "未启动")
+    }
+
+    func testOnceReminderWithoutADateIsReported() {
+        // 这条就是用户数据里那条「京东京豆活动」：repeat=once 但 anchorDay 是空的
+        let reminder = scheduled(hour: 9, minute: 0, rule: .once)
+        XCTAssertEqual(ReminderScheduler.liveness(of: reminder, now: now), .missingDate)
+        XCTAssertEqual(ReminderScheduler.Liveness.missingDate.note, "没设日期")
+    }
+
+    func testExpiredOnceReminderIsReported() {
+        // 用一个肯定已经过去的日期
+        let past = Date(timeIntervalSince1970: 1_600_000_000)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.calendar = calendar
+        let reminder = scheduled(hour: 9, minute: 0, rule: .once, anchorDay: formatter.string(from: past))
+        XCTAssertEqual(ReminderScheduler.liveness(of: reminder, now: now), .expiredOnce)
+        XCTAssertEqual(ReminderScheduler.Liveness.expiredOnce.note, "已过期")
+    }
+
+    func testLiveRemindersShowNoNote() {
+        XCTAssertNil(ReminderScheduler.Liveness.live.note, "正常的什么都不显示，别在列表里加噪音")
+    }
+}
