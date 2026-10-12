@@ -606,10 +606,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var reminderList: ReminderListController?
     /// 提醒（配置存 UserDefaults，30 秒扫一次）
     private let reminderStore = ReminderStore()
+    /// 8 杯水：一天按起止时间均分若干次，记今天的进度
+    private let waterTracker = WaterTracker()
     private lazy var reminderCenter = ReminderCenter(
         store: reminderStore,
         priceAlertStore: priceAlertStore,
-        characterController: floatingCharacterController
+        characterController: floatingCharacterController,
+        waterTracker: waterTracker
     )
 
     /// 微信未读数（面板左右两个徽标用）
@@ -689,6 +692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         floatingCharacterController.setVisible(effectiveCharacterVisible)
         reminderCenter.start()
+        // 头顶牌子只有一个位置：倒计时优先（它有时效性），不在跑时显示喝水的进度
+        reminderCenter.secondaryPlaqueText = { [weak self] in self?.waterTracker.plaqueText }
         // 带着会议模式重启时也要装上，否则提醒会照弹
         applyMeetingSuppression()
         askLaunchAtLoginIfNeeded()
@@ -834,6 +839,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 金价和股票行情都拿到之后再判一次。单一判定点，代价是金价提醒要等到
         // 三个请求里最慢那个回来（各自 5 秒超时）—— 对价格提醒来说无所谓
         checkPriceAlerts()
+        // 纯计算，无 await —— 和价格提醒同一个理由挂在这儿
+        checkWaterReminders()
         // 纯计算，无 await：不影响金价与状态栏的关键路径
         floatingCharacterController.updateProfitLoss(
             marketClosedGreeting()?.greeting ?? totalProfitLossText()
@@ -1058,6 +1065,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(makeWatchlistMenuItem())
         menu.addItem(makeReminderMenuItem())
+        menu.addItem(makeWaterMenuItem())
         let hotKeyItem = NSMenuItem(title: "快捷键…", action: #selector(showHotKeySettings), keyEquivalent: "")
         hotKeyItem.target = self
         menu.addItem(hotKeyItem)
@@ -1470,6 +1478,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         return item
+    }
+
+    // MARK: - 8 杯水
+
+    private func makeWaterMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "8 杯水", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "8 杯水")
+
+        // 状态行：不能点的信息行（同「AI 举牌」的状态行写法）
+        let status = NSMenuItem(title: "今天 \(waterTracker.menuStatusText)", action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        submenu.addItem(status)
+
+        if waterTracker.isEnabled {
+            submenu.addItem(makeAddItem(title: "喝了一杯（+1）", action: #selector(recordWaterCup)))
+        }
+        submenu.addItem(NSMenuItem.separator())
+
+        let toggle = NSMenuItem(title: "开启", action: #selector(toggleWaterTracking), keyEquivalent: "")
+        toggle.target = self
+        toggle.state = waterTracker.isEnabled ? .on : .off
+        submenu.addItem(toggle)
+        submenu.addItem(makeAddItem(title: "设置…", action: #selector(showWaterSettings)))
+
+        menu.setSubmenu(submenu, for: item)
+        return item
+    }
+
+    /// 到点就提醒。走的是和提醒同一条呈现路径（`AlertPresenter`），
+    /// 所以**会议模式的抑制与补放自动生效**，不用另写一套
+    private func checkWaterReminders() {
+        // 跨天先归零：app 一直开着跨零点也要正确重置
+        if waterTracker.resetIfNewDay() {
+            reminderCenter.refreshPlaque()
+            rebuildMenu()
+        }
+        guard let cup = waterTracker.dueCup() else { return }
+
+        // 先登记再响：和价格提醒一个道理，避免模态框阻塞期间把同一杯重复触发
+        waterTracker.markFired(cup)
+        let drunk = waterTracker.progress.drunk
+        let cups = waterTracker.plan.effectiveCups
+        reminderCenter.presenter.fire(
+            title: "该喝水了",
+            body: "第 \(cup + 1) 杯 · 今天 \(drunk)/\(cups)",
+            methods: waterTracker.plan.methods,
+            key: waterTracker.alertKey
+        )
+    }
+
+    @objc private func recordWaterCup() {
+        guard waterTracker.record() else { return }
+        reminderCenter.refreshPlaque()
+        rebuildMenu()
+    }
+
+    @objc private func toggleWaterTracking() {
+        waterTracker.setEnabled(!waterTracker.isEnabled)
+        // 开了才占头顶那个位置，关了要让出来
+        reminderCenter.refreshPlaque()
+        rebuildMenu()
+    }
+
+    @objc private func showWaterSettings() {
+        let form = WaterSettingsView(plan: waterTracker.plan)
+        let dialog = NSAlert()
+        dialog.messageText = "8 杯水"
+        dialog.informativeText = "在起止时间之间均分这几杯，到点提醒"
+        dialog.addButton(withTitle: "保存")
+        dialog.addButton(withTitle: "取消")
+        dialog.accessoryView = form
+        dialog.window.initialFirstResponder = form.firstResponderControl
+
+        // 和其他设置框一致：模态期间停掉热键，免得又切一次会议模式把自己绕进去
+        hotKeyCenter.stop()
+        defer { applyHotKeys() }
+        guard dialog.runModal() == .alertFirstButtonReturn else { return }
+
+        waterTracker.setPlan(form.plan)
+        reminderCenter.refreshPlaque()
+        rebuildMenu()
     }
 
     @objc private func addReminder() {

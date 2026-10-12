@@ -19,6 +19,9 @@ final class ReminderCenter {
 
     private let store: ReminderStore
     private let characterController: FloatingCharacterController
+    /// 只是为了在 `stillValid` 里认领喝水提醒（它不在任何 store 里）。
+    /// 可空：测试和部分构造路径不需要它
+    private weak var waterTracker: WaterTracker?
     /// 呈现层。价格提醒也复用它 —— 这样「气泡 → 弹窗等待时间」全 app 只有一份
     let presenter: AlertPresenter
     private var timer: Timer?
@@ -31,15 +34,21 @@ final class ReminderCenter {
     init(
         store: ReminderStore,
         priceAlertStore: PriceAlertStore? = nil,
-        characterController: FloatingCharacterController
+        characterController: FloatingCharacterController,
+        waterTracker: WaterTracker? = nil
     ) {
         self.store = store
         self.characterController = characterController
+        self.waterTracker = waterTracker
         self.presenter = AlertPresenter(characterController: characterController)
         // 顺延回来之前确认对应的定时或价格提醒还在
-        presenter.stillValid = { [weak store, weak priceAlertStore] id in
+        // ⚠️ 第三个 condition 不能省：8 杯水的提醒**不在任何 store 里**，
+        // 只认前两个的话它会在这里被判成「已删除」，会议模式补放时被静默丢掉 ——
+        // 开会期间该喝的水就再也补不回来了
+        presenter.stillValid = { [weak store, weak priceAlertStore, weak waterTracker] id in
             store?.reminders.contains(where: { $0.id == id }) == true
                 || priceAlertStore?.alerts.contains(where: { $0.id == id }) == true
+                || waterTracker?.alertKey == id
         }
         // 模态框会阻塞主线程一整轮，期间到点的提醒原来就永远丢了 —— 关掉之后补响
         presenter.onModalFinished = { [weak self] startedAt, finishedAt in
@@ -180,8 +189,19 @@ final class ReminderCenter {
         publishCountdown()
     }
 
+    /// 倒计时不在跑时，头顶牌子交给别人（8 杯水的进度）。
+    /// 由 AppDelegate 注入 —— ReminderCenter 不该知道 8 杯水的存在
+    var secondaryPlaqueText: (() -> String?)?
+
+    /// 倒计时**优先**：它有时效性（正在倒数），水进度只是个静态数字。
+    /// 水那边进度变了就调 `refreshPlaque()`，不需要每秒刷
     private func publishCountdown() {
-        characterController.updateCountdown(countdownText())
+        characterController.updateCountdown(countdownText() ?? secondaryPlaqueText?())
+    }
+
+    /// 别人（8 杯水）的进度变了，重算一次牌子
+    func refreshPlaque() {
+        publishCountdown()
     }
 
     /// 以原定唤醒时刻补算区间；先登记整批，避免弹窗重入时再次补响同一条。
