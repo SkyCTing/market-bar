@@ -22,11 +22,38 @@ struct WaterPlan: Codable, Equatable, Sendable {
     /// **没有这个 key 就会被当成「已删除」静默丢掉** —— 开会期间该喝的水再也补不回来
     var alertKey = UUID()
 
+    /// 自定义的每一杯时刻（从 0 点算起的分钟数）。
+    ///
+    /// **空数组 = 按起止时间均分**（默认）。非空时以它为准 ——
+    /// 起止时间和杯数这时只是「恢复均分」用的生成参数。
+    /// 设置界面保存时会拿它和均分结果比对：一样就存空的（这样以后改起止时间仍然生效），
+    /// 不一样才存具体时刻
+    var customTimes: [Int] = []
+
     /// 杯数夹到合理范围：0 或负数会让均分算出除零 / 负间隔
     static let cupRange = 1 ... 16
-    var effectiveCups: Int {
+    /// 用户填的杯数（夹过范围）
+    var clampedCups: Int {
         min(max(cups, Self.cupRange.lowerBound), Self.cupRange.upperBound)
     }
+
+    /// 均分出来的时刻。设置界面用它判断「用户改过没有」
+    var evenMinutes: [Int] {
+        let window = effectiveWindow
+        let count = clampedCups
+        guard window.end > window.start else { return [] }
+        let step = Double(window.end - window.start) / Double(count)
+        return (0 ..< count).map { window.start + Int((step * Double($0)).rounded()) }
+    }
+
+    /// 今天每一杯的时刻（分钟，升序）。**自定义优先**
+    var cupMinutes: [Int] {
+        guard !customTimes.isEmpty else { return evenMinutes }
+        return Array(customTimes.sorted().prefix(Self.cupRange.upperBound))
+    }
+
+    /// 今天实际会响几杯
+    var effectiveCups: Int { cupMinutes.count }
 
     /// 起止反了就换回来 —— 把结束时间调到开始之前是很自然的误操作，
     /// 与其报错，不如按「他就是想要一个区间」来理解
@@ -44,6 +71,7 @@ struct WaterPlan: Codable, Equatable, Sendable {
         startMinutes = try container.decodeIfPresent(Int.self, forKey: .startMinutes) ?? 9 * 60
         endMinutes = try container.decodeIfPresent(Int.self, forKey: .endMinutes) ?? 21 * 60
         cups = try container.decodeIfPresent(Int.self, forKey: .cups) ?? 8
+        customTimes = try container.decodeIfPresent([Int].self, forKey: .customTimes) ?? []
         methods = try container.decodeIfPresent(Reminder.Methods.self, forKey: .methods) ?? .bubble
         alertKey = try container.decodeIfPresent(UUID.self, forKey: .alertKey) ?? UUID()
     }
@@ -82,20 +110,19 @@ enum WaterSchedule {
         on day: Date,
         calendar: Calendar = TradingSession.calendar
     ) -> [Date] {
-        let cups = plan.effectiveCups
-        let window = plan.effectiveWindow
         let base = calendar.startOfDay(for: day)
-        guard let first = calendar.date(byAdding: .minute, value: window.start, to: base) else { return [] }
-        let stepSeconds = stepSeconds(plan)
-        return (0 ..< cups).compactMap { index in
-            calendar.date(byAdding: .second, value: Int(stepSeconds * Double(index)), to: first)
-        }
+        return plan.cupMinutes.compactMap { calendar.date(byAdding: .minute, value: $0, to: base) }
     }
 
-    /// 两杯之间隔多少秒
-    static func stepSeconds(_ plan: WaterPlan) -> Double {
-        let window = plan.effectiveWindow
-        return Double(window.end - window.start) * 60 / Double(plan.effectiveCups)
+    /// 「错过不补」的新鲜度窗口：取**相邻两杯的最小间隔**。
+    ///
+    /// 自定义时间可能疏密不均，用最小的那个才不会被稀疏的一段把窗口放大 ——
+    /// 否则 14:00 和 18:00 之间空出一大段时，18:30 打开 app 还会补响 14:00 那杯
+    static func freshnessWindow(_ plan: WaterPlan) -> TimeInterval {
+        let minutes = plan.cupMinutes.sorted()
+        guard minutes.count > 1 else { return 60 * 60 }   // 只有一杯时给一小时
+        let gaps = zip(minutes.dropFirst(), minutes).map { Double($0 - $1) * 60 }
+        return max(60, gaps.min() ?? 3600)
     }
 
     /// 今天还没到、且还没喝够的下一次。喝够了 / 过点了 / 没开 → nil
@@ -125,7 +152,7 @@ enum WaterSchedule {
         guard let index = todays.lastIndex(where: { $0 <= now }) else { return nil }
         // 最近这杯已经响过就不再往前找 —— 那些属于「错过」，不补
         guard !fired.contains(index) else { return nil }
-        return now.timeIntervalSince(todays[index]) <= stepSeconds(plan) ? index : nil
+        return now.timeIntervalSince(todays[index]) <= freshnessWindow(plan) ? index : nil
     }
 
     /// "3/8"

@@ -115,6 +115,55 @@ final class WaterScheduleTests: XCTestCase {
     func testTextFormat() {
         XCTAssertEqual(WaterSchedule.text(drunk: 3, cups: 8), "3/8")
     }
+
+    // MARK: - 自定义每一杯的时刻
+
+    private func custom(_ minutes: [Int]) -> WaterPlan {
+        var plan = WaterPlan()
+        plan.isEnabled = true
+        plan.customTimes = minutes
+        return plan
+    }
+
+    func testCustomTimesOverrideTheEvenDivision() {
+        // 9:00–21:00 均分本该是 9:00 / 10:30 / …，自定义之后一律以自定义为准
+        let plan = custom([9 * 60, 14 * 60, 16 * 60 + 20])
+        XCTAssertEqual(hours(WaterSchedule.times(in: plan, on: at(0, 0))).map { "\($0.0):\(String(format: "%02d", $0.1))" },
+                       ["9:00", "14:00", "16:20"])
+    }
+
+    func testCustomTimesAreSortedAndDriveTheCupCount() {
+        // 乱序进来也要按时间先后排好
+        let plan = custom([16 * 60, 9 * 60, 14 * 60])
+        XCTAssertEqual(plan.cupMinutes, [9 * 60, 14 * 60, 16 * 60])
+        // 杯数这时以自定义列表为准，不是 plan.cups（默认 8）
+        XCTAssertEqual(plan.effectiveCups, 3)
+    }
+
+    func testEmptyCustomTimesFallsBackToEvenDivision() {
+        var plan = WaterPlan()
+        plan.customTimes = []
+        XCTAssertEqual(plan.cupMinutes, plan.evenMinutes)
+        XCTAssertEqual(plan.effectiveCups, 8)
+    }
+
+    func testFreshnessWindowUsesTheSmallestGap() {
+        // ⚠️ 自定义时刻可能疏密不均。窗口取**最小**间隔才不会被稀疏的一段放大：
+        // 9:00 / 9:30 / 18:00 的最小间隔是 30 分钟，所以 18:45 时那杯 18:00
+        // 已经「凉了」，不该补响（用平均或最大间隔算的话都会误补）
+        let plan = custom([9 * 60, 9 * 60 + 30, 18 * 60])
+        XCTAssertEqual(WaterSchedule.freshnessWindow(plan), 30 * 60)
+        XCTAssertNil(WaterSchedule.dueCup(at: at(18, 45), plan: plan, fired: []))
+        // 还在窗口内就正常响
+        XCTAssertEqual(WaterSchedule.dueCup(at: at(18, 10), plan: plan, fired: []), 2)
+    }
+
+    func testSingleCupGetsAnHourWideWindow() {
+        let plan = custom([10 * 60])
+        XCTAssertEqual(WaterSchedule.freshnessWindow(plan), 60 * 60)
+        XCTAssertEqual(WaterSchedule.dueCup(at: at(10, 30), plan: plan, fired: []), 0)
+        XCTAssertNil(WaterSchedule.dueCup(at: at(11, 30), plan: plan, fired: []))
+    }
 }
 
 /// 状态与持久化
