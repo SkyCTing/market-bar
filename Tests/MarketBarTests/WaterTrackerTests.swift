@@ -298,3 +298,69 @@ final class WaterTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.plaqueText, "💧 1/8")
     }
 }
+
+/// 设置表单：读出来的配置对不对
+@MainActor
+final class WaterSettingsViewTests: XCTestCase {
+    private func plan(cups: Int = 8, start: Int = 9 * 60, end: Int = 21 * 60) -> WaterPlan {
+        var plan = WaterPlan()
+        plan.isEnabled = true
+        plan.cups = cups
+        plan.startMinutes = start
+        plan.endMinutes = end
+        return plan
+    }
+
+    /// 表单里那 16 个「每杯时刻」选择器（前两个是起止时间，跳过）
+    private func cupPickers(_ view: WaterSettingsView) -> [NSDatePicker] {
+        view.subviews.compactMap { $0 as? NSDatePicker }.dropFirst(2).filter { !$0.isHidden }
+    }
+
+    func testSavingWithoutChangingAnythingStaysOnTheEvenDivision() {
+        let view = WaterSettingsView(plan: plan())
+        XCTAssertEqual(view.plan.customTimes, [], "没动过任何一杯，就不该变成「自定义」")
+        XCTAssertEqual(view.plan.cupMinutes.count, 8)
+    }
+
+    func testShrinkingTheCupCountDoesNotLeakHiddenPickers() {
+        // ⚠️ 复现用户报的 bug：设 16 杯再改回 8 杯，保存后再打开变成 16 杯。
+        // 原因是藏起来的那 8 个选择器还留着 16 杯时的值，
+        // 而保存时把 16 个全读了
+        let view = WaterSettingsView(plan: plan(cups: 16))
+        view.setCupCount(8)
+
+        XCTAssertEqual(view.plan.cupMinutes.count, 8, "杯数不能因为藏起来的选择器而翻倍")
+        XCTAssertEqual(view.plan.customTimes, [], "藏起来的那些值也不该被当成自定义")
+    }
+
+    func testGrowingTheCupCountAlsoStaysClean() {
+        let view = WaterSettingsView(plan: plan(cups: 4))
+        view.setCupCount(12)
+        XCTAssertEqual(view.plan.cupMinutes.count, 12)
+        XCTAssertEqual(view.plan.customTimes, [])
+    }
+
+    func testEditingOneCupMakesItCustom() {
+        let view = WaterSettingsView(plan: plan())
+        let pickers = cupPickers(view)
+        XCTAssertEqual(pickers.count, 8)
+
+        // 把第一杯从 9:00 改成 9:07
+        var components = DateComponents()
+        components.year = 2000; components.month = 1; components.day = 1
+        components.hour = 9; components.minute = 7
+        pickers[0].dateValue = TradingSession.calendar.date(from: components)!
+
+        let saved = view.plan
+        XCTAssertEqual(saved.customTimes.count, 8, "改一杯之后要把 8 个都记下来")
+        XCTAssertEqual(saved.customTimes.first, 9 * 60 + 7)
+        // 其余几杯还是均分的值
+        XCTAssertEqual(Array(saved.customTimes.dropFirst()), Array(saved.evenMinutes.dropFirst()))
+    }
+
+    func testDegenerateWindowStillHasOneCup() {
+        // 起止拖成一样时不能变成「0 杯」（那会表现成永远不提醒，还看不出原因）
+        let view = WaterSettingsView(plan: plan(cups: 8, start: 10 * 60, end: 10 * 60))
+        XCTAssertEqual(view.plan.cupMinutes, [10 * 60])
+    }
+}

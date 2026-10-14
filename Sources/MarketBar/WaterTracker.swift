@@ -41,7 +41,9 @@ struct WaterPlan: Codable, Equatable, Sendable {
     var evenMinutes: [Int] {
         let window = effectiveWindow
         let count = clampedCups
-        guard window.end > window.start else { return [] }
+        // 起止相同（用户把结束时间拖到和开始一样）时退化成「就在那一刻一杯」。
+        // 返回空列表的话 effectiveCups 会变成 0，表现成「永远不提醒」而且看不出原因
+        guard window.end > window.start else { return [window.start] }
         let step = Double(window.end - window.start) / Double(count)
         return (0 ..< count).map { window.start + Int((step * Double($0)).rounded()) }
     }

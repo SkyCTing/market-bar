@@ -62,9 +62,12 @@ final class WaterSettingsView: NSView {
         next.endMinutes = Self.minutes(from: endPicker.dateValue)
         next.cups = Int(cupsField.stringValue) ?? next.cups
         next.methods = selectedMethods
+        // ⚠️ **只读可见的那些**。杯数调小之后，多出来的选择器只是被 hidden，
+        // 值还留着上一次的 —— 全读进来的话，保存一次就把它们当「自定义」写进配置，
+        // 再打开杯数就翻倍了（用户报的正是这个：设 8 杯，存完变 16 杯）
+        let picked = cupPickers.filter { !$0.isHidden }.map { Self.minutes(from: $0.dateValue) }
         // 和均分一模一样就存空的：这样以后改起止时间仍然会跟着变。
         // 只有真的动过某一杯，才把具体时刻记下来
-        let picked = cupPickers.map { Self.minutes(from: $0.dateValue) }
         next.customTimes = (picked == evenMinutes) ? [] : picked
         return next
     }
@@ -249,6 +252,14 @@ final class WaterSettingsView: NSView {
 
     @objc private func cupChanged() {
         refreshSummary()
+    }
+
+    /// 给测试用：等价于用户在界面上把「每天几杯」改成 n 并回车。
+    /// （那个输入框是私有的，测试驱动不到）
+    func setCupCount(_ count: Int) {
+        cupsField.stringValue = "\(count)"
+        cupsStepper.integerValue = count
+        fillCupPickers(evenMinutes)
     }
 
     @objc private func resetToEven() {
