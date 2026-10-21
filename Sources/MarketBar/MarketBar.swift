@@ -701,7 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.reminderCenter.acknowledge() ?? false
         }
         floatingCharacterController.onRightClick = { [weak self] anchor in
-            self?.showChat(anchor: anchor)
+            self?.showCharacterMenu(anchor: anchor)
         }
         floatingCharacterController.hidesAtEdge = hidesFloatingCharacterAtEdge
         floatingCharacterController.onAutoHidden = { [weak self] in
@@ -720,6 +720,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             await self.refreshPrice()
         }
+    }
+
+    // MARK: - 右键人物弹出的菜单
+
+    /// 右键**头部**弹出的快捷菜单。
+    ///
+    /// 原来右键直接开聊天窗 —— 但右键是「随手在人物身上做一件事」的手势，
+    /// 只能干一件事太浪费，而且聊天只是其中一种。
+    private func showCharacterMenu(anchor: NSRect) {
+        let menu = NSMenu()
+        // ⚠️ 必须关掉自动校验：默认 autoenablesItems 会按「target 能不能响应这个
+        // selector」把 isEnabled 重置回 true，我下面手动置灰的那几项会被它顶回来
+        menu.autoenablesItems = false
+
+        let chat = NSMenuItem(title: "AI 聊天", action: #selector(openChatFromCharacter), keyEquivalent: "")
+        chat.target = self
+        chat.image = Self.menuSymbol("bubble.left.and.bubble.right")
+        menu.addItem(chat)
+
+        // 喝了一杯：水功能没开就置灰，并把原因写在标题里（光灰着不说为什么更让人困惑）
+        let water = NSMenuItem(
+            title: waterTracker.isEnabled
+                ? "喝了一杯（今天 \(waterTracker.menuStatusText)）"
+                : "8 杯水未开启",
+            action: #selector(recordWaterCup),
+            keyEquivalent: ""
+        )
+        water.target = self
+        water.image = Self.menuSymbol("drop.fill")
+        water.isEnabled = waterTracker.isEnabled
+        menu.addItem(water)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let meeting = NSMenuItem(
+            title: meetingMode.isOn ? "关闭会议模式" : "开启会议模式",
+            action: #selector(toggleMeetingMode),
+            keyEquivalent: ""
+        )
+        meeting.target = self
+        meeting.image = Self.menuSymbol("bell.slash")
+        menu.addItem(meeting)
+
+        // 会议模式中人物是被强制藏起来的（也正因为藏起来了，这个菜单根本弹不出来），
+        // 所以这一项在会议模式里没有意义 —— 置灰并说明
+        let visibility = NSMenuItem(
+            title: meetingMode.isOn
+                ? "显示人物（会议模式中）"
+                : (isFloatingCharacterVisible ? "隐藏人物" : "显示人物"),
+            action: #selector(toggleFloatingCharacter),
+            keyEquivalent: ""
+        )
+        visibility.target = self
+        visibility.image = Self.menuSymbol(isFloatingCharacterVisible ? "eye.slash" : "eye")
+        visibility.isEnabled = !meetingMode.isOn
+        menu.addItem(visibility)
+
+        // view 传 nil：location 就是屏幕坐标。锚点取人物顶部中间，菜单从脑袋上方弹出
+        menu.popUp(positioning: nil, at: NSPoint(x: anchor.midX, y: anchor.maxY), in: nil)
+    }
+
+    /// 菜单图标。取不到就返回 nil（那一项就没有图标，不至于变形）——
+    /// 本仓库以前没用过 SF Symbols，这是第一处
+    private static func menuSymbol(_ name: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)
+    }
+
+    @objc private func openChatFromCharacter() {
+        showChat(anchor: floatingCharacterController.anchorFrame)
     }
 
     /// 右键人物 → 打开/收起聊天窗（懒创建，和 hoverPanel 一个套路）
